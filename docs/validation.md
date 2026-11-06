@@ -16,7 +16,7 @@ imagecodecs 2026.10.10, PySide6, flirpy 0.6.2, ExifTool 12.76.
 
 ```
 $ pytest
-98 passed in 7.1 s
+100 passed in 7.7 s
 ```
 
 | # | requirement (from the task) | where it is tested |

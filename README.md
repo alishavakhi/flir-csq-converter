@@ -27,7 +27,7 @@ with h5py.File("experiment_001_temperature.h5") as f:
 
 | | |
 |---|---|
-| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, headless batch mode, PySide6 GUI, 98 automated tests |
+| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, headless batch mode, PySide6 GUI, 100 automated tests |
 | **Validated on a real recording** | A public FLIR **T1020** `.csq` (22 frames, 1024×768, JPEG-LS): payload bytes **sha256-identical** to ExifTool's own extraction, **20/20 metadata fields identical** to ExifTool, temperatures 15.5–33.6 °C matching the scene (outdoor forest, warm animal), **max 0.21 °C** difference from flirpy's independent `raw2temp` |
 | **Not yet validated** | **A real FLIR T540 recording.** No T540 file was available. The container is the same T-series FFF/JPEG-LS family, and the code reads dimensions, codec, calibration and timestamps from the file rather than assuming them — but T540 compatibility and absolute accuracy against FLIR Research Studio remain **pending** (`docs/validation.md` lists exactly what to check) |
 
@@ -166,7 +166,7 @@ takes effect at the next frame boundary.
 ## Tests
 
 ```bash
-pytest            # 98 tests: decoder, radiometry, exporters, end-to-end, CLI, batch, GUI, memory
+pytest            # 100 tests: decoder, radiometry, exporters, end-to-end, CLI, batch, GUI, memory
 ```
 
 The suite builds synthetic recordings with **known ground-truth temperatures** — including a
