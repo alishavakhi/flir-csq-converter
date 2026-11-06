@@ -1,5 +1,7 @@
 # FLIR CSQ → Temperature
 
+[![tests](https://github.com/alishavakhi/flir-csq-converter/actions/workflows/tests.yml/badge.svg)](https://github.com/alishavakhi/flir-csq-converter/actions/workflows/tests.yml)
+
 Turn a FLIR T-series **`.csq` radiometric recording** into a numerical temperature cube:
 `(frames, height, width)` in **°C**, written to HDF5, with per-frame camera timestamps and the
 full calibration record. No JPEG extraction, no palette, no manual per-frame work: select the
