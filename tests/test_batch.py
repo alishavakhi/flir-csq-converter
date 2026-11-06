@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -300,6 +301,41 @@ def test_cli_rejects_input_and_input_dir_together(dataset):
     proc = _cli(str(dataset["good"][0]), "--input-dir", str(dataset["input"]))
     assert proc.returncode != 0
     assert "not both" in (proc.stderr + proc.stdout)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the wrapper targets Linux servers")
+def test_run_server_wrapper_end_to_end(tmp_path):
+    """The shell wrapper activates the interpreter, converts and reports an exit code."""
+    inp = tmp_path / "input"
+    _make(inp, "wrapped_a.csq", frames=3)
+    _make(inp / "sub", "wrapped_b.csq", frames=2)
+    out = tmp_path / "output"
+    env = dict(os.environ, FLIR_PYTHON=sys.executable)
+    env.pop("FLIR_VENV", None)
+    proc = subprocess.run(["bash", str(ROOT / "run_server.sh"), str(inp), str(out)],
+                          capture_output=True, text=True, env=env, timeout=300, check=False)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (out / "wrapped_a_temperature.h5").is_file()
+    assert (out / "sub" / "wrapped_b_temperature.h5").is_file()
+    assert (out / "batch_summary.json").is_file()
+    assert list((out / "logs").glob("batch_*.log"))
+    assert list((out / "logs").glob("run_*.log"))
+    assert "OK: everything converted" in proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the wrapper targets Linux servers")
+def test_run_server_wrapper_explains_partial_failure(tmp_path):
+    inp = tmp_path / "input"
+    _make(inp, "good.csq", frames=2)
+    (inp / "bad.csq").write_bytes(b"junk" * 50)
+    out = tmp_path / "output"
+    env = dict(os.environ, FLIR_PYTHON=sys.executable)
+    env.pop("FLIR_VENV", None)
+    proc = subprocess.run(["bash", str(ROOT / "run_server.sh"), str(inp), str(out)],
+                          capture_output=True, text=True, env=env, timeout=300, check=False)
+    assert proc.returncode == 4
+    assert (out / "good_temperature.h5").is_file()
+    assert "PARTIAL" in proc.stdout
 
 
 def test_cli_returns_2_when_no_recordings_found(tmp_path):

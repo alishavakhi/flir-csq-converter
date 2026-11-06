@@ -11,6 +11,8 @@
 #
 # Environment
 #   FLIR_VENV        virtual environment to activate      (default: ./.venv)
+#   FLIR_PYTHON      use this interpreter directly, no venv activation
+#                    (for module-loaded or system Pythons on HPC clusters)
 #   FLIR_INPUT_DIR   input directory                      (default: ~/flir-project/input)
 #   FLIR_OUTPUT_DIR  output directory                     (default: ~/flir-project/output)
 #   FLIR_FORMATS     comma separated formats              (default: h5)
@@ -37,21 +39,26 @@ mkdir -p "$LOG_DIR" || { echo "cannot create $LOG_DIR"; exit 2; }
 RUN_LOG="$LOG_DIR/run_$(date +%Y%m%d-%H%M%S)_$$.log"
 
 VENV="${FLIR_VENV:-$ROOT/.venv}"
-if [ -f "$VENV/bin/activate" ]; then
+if [ -n "${FLIR_PYTHON:-}" ]; then
+  PY="$FLIR_PYTHON"
+  echo "python     : $PY (FLIR_PYTHON, no venv activation)"
+elif [ -f "$VENV/bin/activate" ]; then
   # shellcheck disable=SC1090
   source "$VENV/bin/activate"
+  PY="python"
 elif [ -n "${CONDA_PREFIX:-}" ]; then
   echo "no venv at $VENV - using the active conda environment ($CONDA_PREFIX)"
+  PY="python"
 else
   echo "error: no virtual environment at $VENV" >&2
-  echo "       run ./scripts/install_server.sh first, or set FLIR_VENV" >&2
+  echo "       run ./scripts/install_server.sh first, or set FLIR_VENV / FLIR_PYTHON" >&2
   exit 2
 fi
 
 echo "input      : $INPUT_DIR"
 echo "output     : $OUTPUT_DIR"
 echo "formats    : $FORMATS"
-echo "python     : $(command -v python) ($(python --version 2>&1))"
+echo "interpreter: $(command -v "$PY" || echo "$PY") ($("$PY" --version 2>&1))"
 echo "run log    : $RUN_LOG"
 echo
 
@@ -62,7 +69,7 @@ fi
 
 # stdout/stderr go to the console and to the run log; the program writes its own
 # batch_*.log and batch_summary.json into the output directory as well.
-python convert_csq.py "${ARGS[@]}" "${EXTRA[@]}" 2>&1 | tee -a "$RUN_LOG"
+"$PY" convert_csq.py "${ARGS[@]}" "${EXTRA[@]}" 2>&1 | tee -a "$RUN_LOG"
 status=${PIPESTATUS[0]}
 
 echo

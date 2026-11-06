@@ -247,7 +247,7 @@ tree.
 
 | symptom | cause / fix |
 |---|---|
-| `no virtual environment at ...` | run `./scripts/install_server.sh`, or `FLIR_VENV=/path/to/venv ./run_server.sh` |
+| `no virtual environment at ...` | run `./scripts/install_server.sh`, or `FLIR_VENV=/path/to/venv ./run_server.sh`; on an HPC module Python use `FLIR_PYTHON=$(command -v python3) ./run_server.sh ...` |
 | `cannot decode the jpegls payload` | no JPEG-LS decoder in the venv: `source .venv/bin/activate && pip install imagecodecs` (or `pylibjpeg pylibjpeg-libjpeg`) |
 | `imagecodecs` build fails | no compiler on the node: `pip install pylibjpeg pylibjpeg-libjpeg` instead; the decoder falls back automatically |
 | `no recordings found` | wrong `--input-dir`, wrong extension, or files are still being uploaded; `--extension .raw` can add one |
