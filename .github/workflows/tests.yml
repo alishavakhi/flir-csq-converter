@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: System libraries (Qt, ExifTool)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+                                  libimage-exiftool-perl
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e ".[dev,plots]"
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check .
+
+      - name: Tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+      - name: CLI smoke test (synthetic T540 recording)
+        run: |
+          python convert_csq.py --demo /tmp/demo.csq --output /tmp/out
+          python examples/read_hdf5.py /tmp/out/demo_temperature.h5
+          python convert_csq.py --verify /tmp/out/demo_temperature.h5

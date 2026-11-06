@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flir-csq"
+version = "0.9.0"
+description = "Convert FLIR T-series .csq radiometric recordings into calibrated temperature matrices (HDF5 / NPY / CSV / MAT)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ali Shavakhi" }]
+keywords = ["flir", "csq", "thermal", "radiometry", "thermography", "hdf5"]
+classifiers = [
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.23",
+    "h5py>=3.8",
+    "imagecodecs>=2023.1.23",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.5", "PySide6-Essentials"]
+mat = ["scipy>=1.10"]
+# decoder fallback if imagecodecs wheels are unavailable on your platform
+fallback = ["pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0"]
+plots = ["matplotlib>=3.7"]
+dev = ["pytest>=7.4", "scipy>=1.10", "flirpy>=0.6.2"]
+
+[project.scripts]
+flir-csq = "flir_csq.cli:main"
+flir-csq-gui = "flir_csq.gui:main"
+
+[project.urls]
+Homepage = "https://github.com/alishavakhi/flir-csq-converter"
+Documentation = "https://github.com/alishavakhi/flir-csq-converter/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+flir_csq = ["py.typed"]
+
+[tool.ruff]
+line-length = 104
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "C4", "PIE"]
+ignore = ["E501"]  # long lines are handled by the formatter, not the linter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:flir_csq.*"]

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.partial
+*.scratch.npy
+
+# Recordings and generated data: never commit thermal data or outputs
+*.csq
+*.seq
+*.h5
+*.hdf5
+*.mat
+*.npy
+*.npy.partial
+*_temperature_csv/
+*.png
+!docs/figures/*.png
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
