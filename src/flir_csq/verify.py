@@ -100,6 +100,14 @@ def verify_hdf5(path: str | Path, *, tolerance_c: float = 1e-3,
             check("temperature_C is float32", temp.dtype == np.float32, str(temp.dtype))
             check("timestamps length matches frames", ts.shape == (temp.shape[0],),
                   f"{ts.shape} vs {temp.shape[0]}")
+            status = None
+            if "frame_status" in f:
+                status = np.asarray(f["frame_status"])
+                check("frame_status length matches frames", status.shape == (temp.shape[0],),
+                      f"{status.shape} vs {temp.shape[0]}")
+                check("frame_status values are 0/1", bool(np.isin(status, (0, 1)).all()),
+                      "unexpected status value")
+                report["recovered_frames"] = int((status == 1).sum())
             if "raw_counts" in f:
                 check("raw_counts dtype uint16", f["raw_counts"].dtype == np.uint16,
                       str(f["raw_counts"].dtype))
@@ -134,6 +142,10 @@ def verify_hdf5(path: str | Path, *, tolerance_c: float = 1e-3,
                     "max_C": float(np.nanmax(frame)) if finite.any() else None,
                     "mean_C": float(np.nanmean(frame)) if finite.any() else None,
                 }
+                if status is not None and status[i] == 1:
+                    stats["decode_failed"] = True
+                    frames_report.append(stats)
+                    continue
                 if "raw_counts" in f and meta.get("conversion", {}).get("coefficients"):
                     info = _camera_from_metadata(meta)
                     params = _params_from_metadata(meta)
@@ -247,6 +259,11 @@ def verify_mat(path: str | Path) -> dict[str, Any]:
                 check("timestamps length matches frames",
                       "timestamps_s" in f and f["timestamps_s"].shape[0] == dims[2],
                       f"{f['timestamps_s'].shape} vs {dims[2]}" if "timestamps_s" in f else "")
+                if "frame_status" in f:
+                    status = np.asarray(f["frame_status"])
+                    check("frame_status length matches frames",
+                          status.shape[0] == dims[2], f"{status.shape} vs {dims[2]}")
+                    report["recovered_frames"] = int((status == 1).sum())
                 if "metadata_json" in f:
                     meta = json.loads(read_char(f["metadata_json"]))
                     report["units"] = meta.get("conversion", {}).get("units")

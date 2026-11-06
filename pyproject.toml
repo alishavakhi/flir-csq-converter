@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flir-csq"
-version = "0.9.0"
+version = "0.9.1"
 description = "Convert FLIR T-series .csq radiometric recordings into calibrated temperature matrices (HDF5 / NPY / CSV / MAT)."
 readme = "README.md"
 requires-python = ">=3.9"

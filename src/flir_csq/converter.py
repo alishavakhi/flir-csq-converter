@@ -41,6 +41,7 @@ from .exporter import (
     make_exporter,
     rewrite_hdf5_metadata,
 )
+from .memory import current_rss_mb, peak_rss_mb
 from .metadata import CameraInfo
 from .radiometry import (
     MODES,
@@ -76,7 +77,12 @@ class ConversionOptions:
     overwrite: bool = False
     compression_level: int = 4
     mat_version: str = "auto"          # auto | 7 | 7.3 (MATLAB output container)
-    mat73_threshold_bytes: int = 1_800_000_000
+    mat73_threshold_bytes: int = 256_000_000
+    # decoding failure policy
+    on_decode_error: str = "fail"      # "fail" | "recover" (NaN frame, timestamps kept)
+    dump_bad_frames: Path | None = None
+    allow_fallback_decoder: bool = False
+    memory_log_every: int = 0          # log RSS every N frames (0 = off)
     # measurement overrides (recorded as overrides in the output metadata)
     emissivity: float | None = None
     object_distance_m: float | None = None
@@ -98,6 +104,10 @@ class ConversionOptions:
             raise ValueError("stride must be >= 1")
         if self.mat_version not in ("auto", "7", "7.3", "v7", "v7.3", "5", "73"):
             raise ValueError("mat_version must be auto, 7 or 7.3")
+        if self.on_decode_error not in ("fail", "recover"):
+            raise ValueError("on_decode_error must be fail or recover")
+        if self.dump_bad_frames is not None:
+            self.dump_bad_frames = Path(self.dump_bad_frames)
         if self.start < 0:
             raise ValueError("start must be >= 0")
         if self.stop is not None and self.stop <= self.start:
@@ -116,7 +126,7 @@ class ConversionResult:
     n_frames_in_file: int = 0
     shape: tuple[int, int, int] = (0, 0, 0)
     mode_effective: str = ""
-    status: str = "ok"  # ok | raw-only | unsupported
+    status: str = "ok"  # ok | ok-with-gaps | raw-only | unsupported
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     validation: dict[str, Any] = field(default_factory=dict)
@@ -209,6 +219,64 @@ def _apply_overrides(info: CameraInfo,
                 float(params.object_distance_m), float(params.atmospheric_temperature_c),
                 float(params.relative_humidity))
     return params, notes
+
+
+def _fmt_mb(value: float | None) -> str:
+    return "?" if value is None else f"{value:.0f}"
+
+
+def _probe_frame(reader: CsqReader, frames: list[int],
+                 options: ConversionOptions) -> tuple[Any, int]:
+    """First decodable frame, used only to learn the geometry.
+
+    In recovery mode frame 0 may itself be unreadable; scanning a short way
+    forward is preferable to refusing the whole recording.
+    """
+    try:
+        return reader.read_frame(frames[0]), frames[0]
+    except CsqError as first_error:
+        if options.on_decode_error != "recover":
+            raise
+        for index in frames[1:min(len(frames), 50)]:
+            try:
+                return reader.read_frame(index), index
+            except CsqError:
+                continue
+        raise CsqError(
+            "no frame in this recording could be decoded; the file is corrupt",
+            hint="Check that the file was copied completely from the camera SD card.",
+            detail=str(first_error),
+        ) from first_error
+
+
+def _record_failed_frame(exc: CsqError, frame_index: int, reader: CsqReader,
+                         options: ConversionOptions) -> dict[str, Any]:
+    """Describe an unreadable frame, optionally saving its payload for analysis."""
+    payload = reader.raw_payload(frame_index)
+    entry: dict[str, Any] = {
+        "frame_index": int(frame_index),
+        "error": exc.message,
+        "error_type": type(exc).__name__,
+        "hint": exc.hint,
+        "payload_bytes": len(payload) if payload is not None else None,
+        "payload_sha256": hashlib.sha256(payload).hexdigest() if payload else None,
+        "cause": None,
+        "attempts": [],
+    }
+    cause = getattr(exc, "cause", None)
+    if cause is not None:
+        entry["cause"] = f"{type(cause).__name__}: {cause}"
+    attempts = getattr(exc, "attempts", None)
+    if attempts:
+        entry["attempts"] = [{"codec": name, "error": text} for name, text in attempts]
+    if options.dump_bad_frames is not None and payload is not None:
+        directory = Path(options.dump_bad_frames)
+        directory.mkdir(parents=True, exist_ok=True)
+        stem = Path(options.input_path).stem
+        target = directory / f"{stem}_frame_{frame_index:06d}.jls"
+        target.write_bytes(payload)
+        entry["payload_file"] = str(target)
+    return entry
 
 
 def _aggregate(per_frame: list[dict[str, Any]], raw_only: bool) -> dict[str, Any]:
@@ -342,7 +410,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
             f"{options.start}..{stop} step {options.stride})"
         )
 
-    reader = CsqReader(index)
+    reader = CsqReader(index, allow_fallback=options.allow_fallback_decoder)
     exporters: dict[str, Any] = {}
     targets: dict[str, Path] = {}
     staged: dict[str, Path] = {}
@@ -362,7 +430,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
         if raw_only:
             warnings.append("raw-only export: no temperature was computed for this recording")
 
-        probe = reader.read_frame(frames[0])
+        probe, probe_index = _probe_frame(reader, frames, options)
         height, width = probe.shape
 
         for fmt in options.formats:
@@ -397,6 +465,8 @@ def convert(options: ConversionOptions) -> ConversionResult:
         previous_calibration: tuple | None = None
         calibration_changes = 0
         timestamps_estimated = False
+        failed_frames: list[dict[str, Any]] = []
+        recovered = 0
 
         for out_index, frame_index in enumerate(frames):
             if cancelled():
@@ -407,23 +477,46 @@ def convert(options: ConversionOptions) -> ConversionResult:
                     hint="No partial output was kept.",
                 )
             info = first_info if frame_index == frames[0] else reader.camera_info(frame_index)
-            raw_frame = reader.read_frame(frame_index)
-            if previous_shape is not None and raw_frame.shape != previous_shape:
-                raise MalformedFrame(
-                    f"frame {frame_index} is {raw_frame.shape[1]}x{raw_frame.shape[0]}, but "
-                    f"earlier frames are {previous_shape[1]}x{previous_shape[0]}",
-                    hint="The recording changes geometry mid-file; convert each part separately.",
-                )
-            previous_shape = raw_frame.shape
+            frame_status = 0
+            try:
+                raw_frame = reader.read_frame(frame_index)
+            except CsqError as exc:
+                if options.on_decode_error != "recover":
+                    raise
+                failure = _record_failed_frame(exc, frame_index, reader, options)
+                warnings_acc.append(
+                    f"frame {frame_index}: {exc.message} (kept as NaN, timestamp preserved)")
+                failed_frames.append(failure)
+                recovered += 1
+                raw_frame = None
+                frame_status = 1
+
+            temperature: np.ndarray | None = None
+            if raw_frame is None:
+                raw_for_write = np.zeros((height, width), np.uint16)
+                if not raw_only:
+                    temperature = np.full((height, width), np.nan, np.float32)
+            else:
+                raw_for_write = raw_frame.raw
+                if previous_shape is not None and raw_frame.shape != previous_shape:
+                    raise MalformedFrame(
+                        f"frame {frame_index} is {raw_frame.shape[1]}x{raw_frame.shape[0]}, but "
+                        f"earlier frames are {previous_shape[1]}x{previous_shape[0]}",
+                        hint="The recording changes geometry mid-file; convert each part "
+                             "separately.",
+                    )
+                previous_shape = raw_frame.shape
+                warnings_acc.extend(f"frame {frame_index}: {w}" for w in raw_frame.warnings)
+
             calibration = info.calibration_signature()
             if previous_calibration is not None and calibration != previous_calibration:
                 calibration_changes += 1
             previous_calibration = calibration
-            warnings_acc.extend(f"frame {frame_index}: {w}" for w in raw_frame.warnings)
 
-            temperature: np.ndarray | None = None
-            stats: dict[str, Any]
-            if raw_only:
+            if raw_frame is None:
+                stats = {"frame_index": frame_index, "decode_failed": True,
+                         "error": failed_frames[-1]["error"]}
+            elif raw_only:
                 stats = {"frame_index": frame_index}
             else:
                 params, notes = _apply_overrides(info, options)
@@ -443,14 +536,22 @@ def convert(options: ConversionOptions) -> ConversionResult:
                 "output_index": out_index,
                 "timestamp_s": round(float(ts), 6),
                 "timestamp_unix_ms": int(ms) if ms is not None else None,
-                "raw_min": int(raw_frame.raw.min()),
-                "raw_max": int(raw_frame.raw.max()),
-                "codec": raw_frame.codec,
+                "raw_min": int(raw_for_write.min()),
+                "raw_max": int(raw_for_write.max()),
+                "codec": raw_frame.codec if raw_frame is not None else None,
+                "status": "decode_failed" if frame_status else "ok",
             })
+            if frame_status:
+                failed_frames[-1]["timestamp_s"] = round(float(ts), 6)
+                failed_frames[-1]["timestamp_unix_ms"] = int(ms) if ms is not None else None
             per_frame.append(stats)
 
             for exporter in exporters.values():
-                exporter.write(out_index, temperature, raw_frame.raw, ts, ms)
+                exporter.write(out_index, temperature, raw_for_write, ts, ms,
+                               status=frame_status)
+            if options.memory_log_every and (out_index + 1) % options.memory_log_every == 0:
+                LOG.info("memory: frame %d/%d, rss %s MB, peak %s MB", out_index + 1, total,
+                         _fmt_mb(current_rss_mb()), _fmt_mb(peak_rss_mb()))
             if out_index % 10 == 0 or out_index == total - 1:
                 progress((out_index + 1) / total,
                          f"frame {frame_index} ({out_index + 1}/{total})",
@@ -482,6 +583,9 @@ def convert(options: ConversionOptions) -> ConversionResult:
             "atmospheric_transmission": (converted_info.atmospheric_transmission
                                          if converted_info else None),
             "decoder": probe.codec,
+            "recovered_frames": recovered,
+            "on_decode_error": options.on_decode_error,
+            "allow_fallback_decoder": options.allow_fallback_decoder,
             "matlab_container": mat_container or None,
             "per_frame_calibration_changes": calibration_changes,
             "invalid_pixels_note": (
@@ -523,6 +627,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
             "timing": timing,
             "conversion": conversion_meta,
             "statistics": {"per_frame": per_frame, "aggregate": _aggregate(per_frame, raw_only)},
+            "failed_frames": failed_frames,
             "outputs": {},
             "warnings": [],
             "validation": {},
@@ -546,6 +651,19 @@ def convert(options: ConversionOptions) -> ConversionResult:
             staged[fmt].replace(target)
             published.append(target)
 
+        if recovered:
+            warnings.append(
+                f"{recovered} frame(s) could not be decoded; they are NaN with status 1 in "
+                "frame_status and their timestamps are preserved"
+            )
+        peak = peak_rss_mb()
+        metadata["memory"] = {
+            "peak_rss_mb": None if peak is None else round(peak, 1),
+            "frames": total,
+            "bytes_per_frame": int(height * width * (4 + (2 if options.save_raw else 0))),
+        }
+        status = "raw-only" if raw_only else ("ok-with-gaps" if recovered else "ok")
+
         result = ConversionResult(
             input_path=input_path,
             outputs={fmt: targets[fmt] for fmt in exporters},
@@ -554,7 +672,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
             n_frames_in_file=index.n_frames,
             shape=(total, height, width),
             mode_effective=conversion_meta["mode_effective"],
-            status="raw-only" if raw_only else "ok",
+            status=status,
             metadata=metadata,
             duration_s=time.perf_counter() - t_start,
         )

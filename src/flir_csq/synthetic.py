@@ -184,9 +184,14 @@ def _encode_payload(counts: np.ndarray, compression: str) -> tuple[bytes, int]:
 
 
 def build_frame(counts: np.ndarray, camera: SyntheticCamera, *, timestamp_ms: int | None,
-                compression: str = "jpegls", tz_minutes: int = 0) -> bytes:
+                compression: str = "jpegls", tz_minutes: int = 0,
+                payload_override: bytes | None = None) -> bytes:
+    """Serialise one FFF block. ``payload_override`` lets tests inject a broken frame."""
     height, width = counts.shape
-    payload, subtype = _encode_payload(counts, compression)
+    if payload_override is not None:
+        payload, subtype = payload_override, 4
+    else:
+        payload, subtype = _encode_payload(counts, compression)
     raw_record_size = 0x20 + len(payload)
     camera_record = build_camera_record(camera, timestamp_ms=timestamp_ms, tz_minutes=tz_minutes)
     n_records = 2
@@ -269,3 +274,77 @@ def write_demo(path: str | Path, *, n_frames: int = 12, width: int = 464,
     return make_synthetic_csq(path, n_frames=n_frames, height=height, width=width,
                               compression="jpegls",
                               temperatures=make_field(n_frames, height, width))
+
+
+def frame_field(index: int, height: int, width: int, *, base_c: float = 25.0,
+                amplitude_c: float = 12.0, noise_c: float = 0.0,
+                seed: int = 0) -> np.ndarray:
+    """One frame of the synthetic scene, computed without materialising the recording."""
+    y, x = np.mgrid[0:height, 0:width]
+    norm_x = x / max(width - 1, 1)
+    norm_y = y / max(height - 1, 1)
+    phase = 2 * math.pi * index / 24.0
+    frame = base_c + amplitude_c * (0.35 * norm_x + 0.25 * norm_y) + 1.5 * math.sin(phase)
+    cx, cy = 0.62 * width, 0.45 * height
+    sigma = 0.09 * min(height, width)
+    frame = frame + 18.0 * np.exp(-(((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma ** 2)))
+    if noise_c:
+        rng = np.random.default_rng(seed + index)
+        frame = frame + rng.normal(0.0, noise_c, frame.shape)
+    return frame
+
+
+def make_streaming_csq(
+    path: str | Path,
+    *,
+    n_frames: int,
+    height: int = 348,
+    width: int = 464,
+    compression: str = "jpegls",
+    camera: SyntheticCamera | None = None,
+    frame_interval_s: float | None = None,
+    epoch_ms: int = DEMO_EPOCH_MS,
+    tz_minutes: int = 0,
+    noise_c: float = 0.0,
+    corrupt_frames: tuple[int, ...] = (),
+    truncate_payload_by: int = 48,
+) -> dict[str, Any]:
+    """Write a long synthetic recording **one frame at a time** (constant memory).
+
+    ``corrupt_frames`` truncates the JPEG-LS payload of those frames so decoding fails
+    deterministically at a known index - the fixture for the recovery tests.
+    """
+    p = Path(path)
+    if camera is None:
+        camera = SyntheticCamera(width=width, height=height)
+    camera.width, camera.height = width, height
+    interval_ms = round((frame_interval_s if frame_interval_s is not None
+                         else 1.0 / max(camera.frame_rate, 1)) * 1000)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    bad = {int(i) for i in corrupt_frames}
+    timestamps: list[int | None] = []
+    with p.open("wb") as fh:
+        for i in range(n_frames):
+            field = frame_field(i, height, width, noise_c=noise_c, seed=0)
+            counts = temperatures_to_counts(field, camera)
+            payload_override = None
+            if i in bad:
+                import imagecodecs
+
+                good = imagecodecs.jpegls_encode(counts)
+                payload_override = good[:-truncate_payload_by] if len(good) > truncate_payload_by \
+                    else good[:8]
+            ts = epoch_ms + i * interval_ms if camera.with_timestamps else None
+            timestamps.append(ts)
+            fh.write(build_frame(counts, camera, timestamp_ms=ts, compression=compression,
+                                 tz_minutes=tz_minutes, payload_override=payload_override))
+    return {
+        "path": p,
+        "camera": camera,
+        "n_frames": n_frames,
+        "interval_ms": interval_ms,
+        "timestamps_ms": timestamps,
+        "corrupt_frames": tuple(sorted(bad)),
+        "height": height,
+        "width": width,
+    }

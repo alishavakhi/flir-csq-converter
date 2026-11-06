@@ -32,14 +32,14 @@ import numpy as np
 
 from .errors import OutputError
 
-CONVERTER_VERSION = "0.9.0"
+CONVERTER_VERSION = "0.9.1"
 
 
 class Exporter(Protocol):  # pragma: no cover - structural typing only
     def open(self, *, n_frames: int, height: int, width: int, save_raw: bool,
              save_mask: bool, temperature: bool = True) -> None: ...
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None: ...
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None: ...
     def finalize(self, metadata: dict[str, Any]) -> Path: ...
     def abort(self) -> None: ...
 
@@ -84,6 +84,8 @@ class Hdf5Exporter:
             "timestamps", shape=(n_frames,), dtype="float64")
         self._datasets["timestamps_unix_ms"] = self._h5.create_dataset(
             "timestamps_unix_ms", shape=(n_frames,), dtype="int64", fillvalue=-1)
+        self._datasets["frame_status"] = self._h5.create_dataset(
+            "frame_status", shape=(n_frames,), dtype="uint8", fillvalue=0)
         if save_raw:
             self._datasets["raw_counts"] = self._h5.create_dataset(
                 "raw_counts", shape=(n_frames, height, width), dtype="uint16",
@@ -95,9 +97,10 @@ class Hdf5Exporter:
                 chunks=mask_chunks, compression="gzip", compression_opts=1)
 
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None:
         if self._h5 is None:
             raise OutputError("HDF5 exporter used before open()")
+        self._datasets["frame_status"][index] = int(status)
         if temperature is not None and "temperature_C" in self._datasets:
             self._datasets["temperature_C"][index] = temperature
         self._datasets["timestamps"][index] = timestamp_s
@@ -123,6 +126,8 @@ class Hdf5Exporter:
                            "source": metadata.get("timing", {}).get("timestamp_source", "unknown")},
             "timestamps_unix_ms": {"unit": "ms", "reference": "POSIX epoch, camera clock (UTC)",
                                    "fillvalue": -1},
+            "frame_status": {"meaning": "0 = decoded, 1 = decode failed (temperature NaN, "
+                                        "timestamp preserved)"},
         }
         for name, ds in self._datasets.items():
             for key, value in attrs.get(name, {}).items():
@@ -177,7 +182,7 @@ class NpyExporter:
                                   shape=(n_frames, height, width))
 
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None:
         self._array[index] = temperature
         self._timestamps.append(float(timestamp_s))
 
@@ -214,7 +219,7 @@ class CsvExporter:
         self._folder.mkdir(parents=True, exist_ok=True)
 
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None:
         assert self._folder is not None
         path = self._folder / f"frame_{index:06d}.csv"
         fmt = f"%.{self._decimals}f"
@@ -253,7 +258,7 @@ class MatExporter:
     target: Path
     compressed: bool = True
     version: str = "auto"  # "auto" | "7" | "7.3"
-    threshold_bytes: int = 1_800_000_000
+    threshold_bytes: int = 256_000_000
     compression_level: int = 4
     atomic: bool = True
     used_version: str = ""
@@ -261,6 +266,7 @@ class MatExporter:
     _array: Any = None
     _timestamps: list[float] = field(default_factory=list)
     _unix_ms: list[int] = field(default_factory=list)
+    _status: list[int] = field(default_factory=list)
     _scratch: Path | None = None
     _n_frames: int = 0
 
@@ -318,14 +324,16 @@ class MatExporter:
                                   shape=(n_frames, height, width))
 
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None:
         if self._impl is not None:
-            self._impl.write(index, temperature, raw, timestamp_s, timestamp_unix_ms)
+            self._impl.write(index, temperature, raw, timestamp_s, timestamp_unix_ms,
+                             status=status)
             return
         assert self._array is not None and temperature is not None
         self._array[index] = temperature
         self._timestamps.append(float(timestamp_s))
         self._unix_ms.append(int(timestamp_unix_ms) if timestamp_unix_ms is not None else -1)
+        self._status.append(int(status))
 
     def finalize(self, metadata: dict[str, Any]) -> Path:
         if self._impl is not None:
@@ -347,6 +355,7 @@ class MatExporter:
             "temperature_C": hwf,
             "timestamps_s": np.asarray(self._timestamps, dtype=np.float64).reshape(-1, 1),
             "timestamps_unix_ms": np.asarray(self._unix_ms, dtype=np.int64).reshape(-1, 1),
+            "frame_status": np.asarray(self._status, dtype=np.uint8).reshape(-1, 1),
             "metadata_json": json.dumps(metadata, default=_json_default),
             "units": "degC",
         }, do_compression=self.compressed, oned_as="column")
@@ -393,7 +402,7 @@ def _json_default(obj: Any) -> Any:
 def make_exporter(fmt: str, target: Path, *, compression_level: int = 4,
                   mat_compressed: bool = True, atomic: bool = True,
                   mat_version: str = "auto",
-                  mat73_threshold_bytes: int = 1_800_000_000) -> Exporter:
+                  mat73_threshold_bytes: int = 256_000_000) -> Exporter:
     fmt = fmt.lower()
     if fmt in ("h5", "hdf5"):
         return Hdf5Exporter(target=target, compression_level=compression_level, atomic=atomic)

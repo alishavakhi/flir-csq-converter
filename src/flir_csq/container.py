@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .errors import MalformedFrame, NotACsqFile, NotRadiometric
+from .errors import CsqError, MalformedFrame, NotACsqFile, NotRadiometric
 from .fff import (
     CAMERA_INFO,
     HEADER_SIZE,
@@ -212,9 +212,11 @@ class CsqReader:
     decoded array regardless of recording length.
     """
 
-    def __init__(self, index: CsqIndex, *, png_byteswap: str = "auto") -> None:
+    def __init__(self, index: CsqIndex, *, png_byteswap: str = "auto",
+                 allow_fallback: bool = False) -> None:
         self.index = index
         self.png_byteswap = png_byteswap
+        self.allow_fallback = allow_fallback
         self._fh = index.path.open("rb")
 
     # -- lifecycle -----------------------------------------------------------------
@@ -243,13 +245,44 @@ class CsqReader:
         return data
 
     def read_frame(self, i: int) -> RawFrame:
-        """Decode frame ``i`` into 16-bit sensor counts."""
+        """Decode frame ``i`` into 16-bit sensor counts.
+
+        Any failure is tagged with ``frame_index`` so callers can report *which*
+        frame is unreadable and recovery mode can skip exactly that one.
+        """
         if self.index.frames[int(i)].truncated:
-            raise MalformedFrame(f"frame {i} is incomplete (the recording was cut short)")
-        frame = parse_raw_frame(self.frame_bytes(i), 0, png_byteswap=self.png_byteswap)
+            exc = MalformedFrame(f"frame {i} is incomplete (the recording was cut short)")
+            exc.frame_index = int(i)
+            raise exc
+        try:
+            frame = parse_raw_frame(self.frame_bytes(i), 0, png_byteswap=self.png_byteswap,
+                                    allow_fallback=self.allow_fallback)
+        except CsqError as exc:
+            if getattr(exc, "frame_index", None) is None:
+                exc.frame_index = int(i)
+            raise
         if frame.raw.size == 0:
-            raise NotRadiometric(f"frame {i} decoded to an empty array")
+            exc = NotRadiometric(f"frame {i} decoded to an empty array")
+            exc.frame_index = int(i)
+            raise exc
         return frame
+
+    def raw_payload(self, i: int) -> bytes | None:
+        """The RawData payload bytes of frame ``i`` (for diagnostics / dumping)."""
+        from .fff import RAW_DATA, find_record, parse_header, parse_records
+
+        try:
+            data = self.frame_bytes(i)
+            header = parse_header(data, 0)
+            rec = find_record(parse_records(data, 0, header), RAW_DATA)
+        except CsqError:
+            return None
+        if rec is None or rec.length <= 0x20:
+            return None
+        start = rec.offset + 0x20
+        if start >= len(data):
+            return None
+        return data[start:rec.offset + rec.length]
 
     def camera_info(self, i: int) -> CameraInfo:
         """Read only the CameraInfo record of frame ``i``.

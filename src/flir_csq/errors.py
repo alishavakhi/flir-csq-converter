@@ -47,6 +47,36 @@ class MissingCalibration(CsqError):
     exit_code = 3
 
 
+class PayloadDecodeError(UnsupportedPayload):
+    """A decoder was available but could not read *this* payload.
+
+    Carries the codec's own exception so the original failure is never replaced by
+    a generic "no decoder installed" message. ``frame_index`` is filled in by the
+    reader once the frame is known.
+    """
+
+    def __init__(self, message: str, *, hint: str | None = None, detail: str | None = None,
+                 frame_index: int | None = None, codec: str | None = None,
+                 payload_size: int | None = None, cause: BaseException | None = None,
+                 attempts: list[tuple[str, str]] | None = None) -> None:
+        super().__init__(message, hint=hint, detail=detail)
+        self.frame_index = frame_index
+        self.codec = codec
+        self.payload_size = payload_size
+        self.cause = cause
+        self.attempts = attempts or []
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "message": self.message,
+            "frame_index": self.frame_index,
+            "codec": self.codec,
+            "payload_size": self.payload_size,
+            "cause": f"{type(self.cause).__name__}: {self.cause}" if self.cause else None,
+            "attempts": [{"codec": name, "error": text} for name, text in self.attempts],
+        }
+
+
 class NotRadiometric(CsqError):
     """The frame holds a colourised image, not per-pixel radiometric counts."""
 

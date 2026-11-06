@@ -24,7 +24,12 @@ input, with `raw_counts`, `timestamps`, `timestamps_unix_ms`, `metadata`, and a
 | `--start N`, `--stop M`, `--stride K` | frame subset; indices are the recording's own frame numbers and are recorded in the report |
 | `--overwrite` | replace existing outputs |
 | `--compression-level 0-9` | HDF5 gzip level (default 4; 0 = uncompressed, fastest) |
-| `--mat-version {auto,7,7.3}` | MATLAB container: `auto` (default) uses v7.3 when the cube approaches 2 GB, v7 for small cubes; `7.3` always streams into an HDF5-based MAT file with no size limit |
+| `--on-decode-error {fail,recover}` | `fail` (default) stops at the first unreadable frame; `recover` writes it as NaN with its timestamp and `frame_status=1`, and continues |
+| `--dump-bad-frames DIR` | save the payload of every unreadable frame (`.jls`) for analysis |
+| `--allow-fallback-decoder` | also try the second decoder when the primary rejects a stream (it may accept truncated data; off by default) |
+| `--check-frames` | decode every frame and report which fail, converting nothing |
+| `--memory-log-every N` | log RSS and peak RSS every N frames |
+| `--mat-version {auto,7,7.3}` | MATLAB container: `auto` (default) uses v7.3 above a 256 MB estimate, v7 for small cubes; `7.3` always streams into an HDF5-based MAT file with no size limit |
 | `--emissivity`, `--distance`, `--reflected-temperature`, `--atmospheric-temperature`, `--humidity`, `--window-transmission`, `--window-temperature` | override values stored in the recording; the override is written into the report |
 | `--inspect` | print what the recording contains, convert nothing |
 | `--verify H5` | re-verify an output cube |
@@ -153,7 +158,7 @@ The container is chosen by `--mat-version`:
   written one at a time while decoding, so cubes far beyond 2 GB cost one frame of RAM.
 * `7` — classic `scipy.io.savemat` file, readable by MATLAB, Octave and scipy, but limited to
   2 GB and it needs the cube in memory.
-* `auto` (default) — v7.3 above a 1.8 GB estimate, v7 below it.
+* `auto` (default) — v7.3 above a 256 MB estimate, v7 below it.
 
 **HDF5 file** (default): MATLAB reads it directly and lazily, but the dataset is stored as
 `(frames, width, height)`, so transpose:

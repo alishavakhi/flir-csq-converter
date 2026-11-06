@@ -149,6 +149,9 @@ class BatchOptions:
     stride: int = 1
     compression_level: int = 4
     mat_version: str = "auto"
+    on_decode_error: str = "fail"
+    dump_bad_frames: Path | None = None
+    allow_fallback_decoder: bool = False
     emissivity: float | None = None
     object_distance_m: float | None = None
     reflected_temperature_c: float | None = None
@@ -178,6 +181,7 @@ class BatchOptions:
             "stride": self.stride,
             "compression_level": self.compression_level,
             "mat_version": self.mat_version,
+            "on_decode_error": self.on_decode_error,
             "emissivity": self.emissivity,
             "object_distance_m": self.object_distance_m,
             "reflected_temperature_c": self.reflected_temperature_c,
@@ -193,9 +197,10 @@ class BatchOptions:
 @dataclass
 class FileOutcome:
     input: Path
-    status: str  # ok | skipped | failed | planned
+    status: str  # ok | ok-with-gaps | skipped | failed | planned
     output: Path | None = None
     frames: int = 0
+    recovered_frames: int = 0
     duration_s: float = 0.0
     error: str | None = None
     hint: str | None = None
@@ -207,6 +212,7 @@ class FileOutcome:
             "output": str(self.output) if self.output else None,
             "status": self.status,
             "frames": self.frames,
+            "recovered_frames": self.recovered_frames,
             "duration_s": round(self.duration_s, 3),
             "error": self.error,
             "hint": self.hint,
@@ -229,7 +235,15 @@ class BatchResult:
 
     @property
     def converted(self) -> int:
-        return sum(1 for o in self.outcomes if o.status == "ok")
+        return sum(1 for o in self.outcomes if o.status in ("ok", "ok-with-gaps"))
+
+    @property
+    def with_gaps(self) -> int:
+        return sum(1 for o in self.outcomes if o.status == "ok-with-gaps")
+
+    @property
+    def recovered_frames(self) -> int:
+        return sum(o.recovered_frames for o in self.outcomes)
 
     @property
     def skipped(self) -> int:
@@ -246,7 +260,7 @@ class BatchResult:
     @property
     def frames(self) -> int:
         """Frames actually written in this run (skipped files are not re-counted)."""
-        return sum(o.frames for o in self.outcomes if o.status == "ok")
+        return sum(o.frames for o in self.outcomes if o.status in ("ok", "ok-with-gaps"))
 
     @property
     def frames_skipped(self) -> int:
@@ -275,6 +289,8 @@ class BatchResult:
                 "skipped": self.skipped,
                 "failed": self.failed,
                 "planned": self.planned,
+                "files_with_gaps": self.with_gaps,
+                "recovered_frames": self.recovered_frames,
                 "frames_written": self.frames,
                 "frames_in_skipped_files": self.frames_skipped,
             },
@@ -513,9 +529,18 @@ def run_batch(options: BatchOptions) -> BatchResult:
                                "; ".join(conversion.validation.get("problems", [])))
             for warning in conversion.warnings[:5]:
                 logger.info("%s: warning: %s", label, warning)
+            recovered = int(conversion.metadata.get("conversion", {})
+                            .get("recovered_frames", 0) or 0)
+            outcome_status = "ok-with-gaps" if recovered else "ok"
+            if recovered:
+                logger.warning("%s: %d frame(s) could not be decoded and were written as NaN "
+                               "(timestamps preserved); see failed_frames in the metadata",
+                               label, recovered)
             result.outcomes.append(FileOutcome(
-                input=path, status="ok", output=primary, frames=conversion.frames_written,
-                duration_s=duration, warnings=conversion.warnings))
+                input=path, status=outcome_status, output=primary,
+                frames=conversion.frames_written, recovered_frames=recovered,
+                duration_s=duration, warnings=conversion.warnings,
+                error=(f"{recovered} unreadable frame(s) kept as NaN" if recovered else None)))
             _record(state, options, path, current, key, "ok", outputs=conversion.outputs,
                     frames=conversion.frames_written)
             save_state(options.output_dir, state)
@@ -556,6 +581,9 @@ def _convert_one(path: Path, outputs: dict[str, Path], options: BatchOptions,
         overwrite=True,  # the batch decides, and records why in the state file
         compression_level=options.compression_level,
         mat_version=options.mat_version,
+        on_decode_error=options.on_decode_error,
+        dump_bad_frames=options.dump_bad_frames,
+        allow_fallback_decoder=options.allow_fallback_decoder,
         emissivity=options.emissivity,
         object_distance_m=options.object_distance_m,
         reflected_temperature_c=options.reflected_temperature_c,

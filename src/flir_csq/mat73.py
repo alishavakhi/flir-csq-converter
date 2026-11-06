@@ -134,6 +134,8 @@ class Mat73Writer:
             "timestamps_s", (n_frames,), "float64", None, {})
         self._datasets["timestamps_unix_ms"] = self._create(
             "timestamps_unix_ms", (n_frames,), "int64", None, {})
+        self._datasets["frame_status"] = self._create(
+            "frame_status", (n_frames,), "uint8", None, {})
         if save_raw:
             self._datasets["raw_counts"] = self._create(
                 "raw_counts", (n_frames, width, height), "uint16", chunks, kwargs)
@@ -146,9 +148,10 @@ class Mat73Writer:
         return ds
 
     def write(self, index: int, temperature: np.ndarray, raw: np.ndarray | None,
-              timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+              timestamp_s: float, timestamp_unix_ms: int | None, status: int = 0) -> None:
         if self._h5 is None:
             raise OutputError("MATLAB writer used before open()")
+        self._datasets["frame_status"][index] = int(status)
         # MATLAB (h, w, frames): store frame.T into dataset[index]
         self._datasets["temperature_C"][index] = temperature.T
         self._datasets["timestamps_s"][index] = timestamp_s

@@ -27,7 +27,7 @@ with h5py.File("experiment_001_temperature.h5") as f:
 
 | | |
 |---|---|
-| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, headless batch mode (HDF5/NPY/CSV/MAT), PySide6 GUI, 117 automated tests |
+| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, headless batch mode (HDF5/NPY/CSV/MAT), frame-level recovery of corrupt frames, PySide6 GUI, 139 automated tests |
 | **Validated on a real recording** | A public FLIR **T1020** `.csq` (22 frames, 1024×768, JPEG-LS): payload bytes **sha256-identical** to ExifTool's own extraction, **20/20 metadata fields identical** to ExifTool, temperatures 15.5–33.6 °C matching the scene (outdoor forest, warm animal), **max 0.21 °C** difference from flirpy's independent `raw2temp` |
 | **Not yet validated** | **A real FLIR T540 recording.** No T540 file was available. The container is the same T-series FFF/JPEG-LS family, and the code reads dimensions, codec, calibration and timestamps from the file rather than assuming them — but T540 compatibility and absolute accuracy against FLIR Research Studio remain **pending** (`docs/validation.md` lists exactly what to check) |
 
@@ -151,7 +151,7 @@ become **NaN**, never a clipped number.
 | HDF5 (default) | `<name>_temperature.h5` | chunked `(1, H, W)`, gzip+shuffle, datasets above |
 | NumPy | `<name>_temperature.npy` | written through a memmap, streaming |
 | CSV | `<name>_temperature_csv/frame_000123.csv` | one numeric matrix per frame, `%.4f` |
-| MATLAB | `<name>_temperature.mat` | `temperature_C` **(H, W, frames)** in °C, `timestamps_s`, `metadata_json`; v7.3 (HDF5, >2 GB, streamed) for large cubes, v7 otherwise (`--mat-version`) |
+| MATLAB | `<name>_temperature.mat` | `temperature_C` **(H, W, frames)** in °C, `timestamps_s`, `metadata_json`; v7.3 (HDF5, streamed, >256 MB) or v7 for small cubes (`--mat-version`) |
 | report | `<name>_conversion.json` | camera, calibration, parameters used, per-frame statistics, warnings, validation |
 
 `raw_counts` is stored by default (`--no-save-raw` to omit) because it is the lossless evidence
@@ -169,7 +169,8 @@ takes effect at the next frame boundary.
 ## Tests
 
 ```bash
-pytest            # 117 tests: decoder, radiometry, exporters, MATLAB v7/v7.3, end-to-end, CLI, batch, GUI, memory
+pytest            # 139 tests: decoder, codec-failure handling, recovery, long recordings, radiometry,
+# exporters, MATLAB v7/v7.3, end-to-end, CLI, batch, GUI, memory
 ```
 
 The suite builds synthetic recordings with **known ground-truth temperatures** — including a
@@ -184,6 +185,7 @@ camera compatibility; see `docs/validation.md`.
 * [`docs/installation.md`](docs/installation.md) — Ubuntu setup, Qt libraries, codec troubleshooting
 * [`docs/usage.md`](docs/usage.md) — CLI reference, GUI walkthrough, Python/MATLAB reading
 * [`docs/server_usage.md`](docs/server_usage.md) — headless deployment on a Linux server, batch mode, SLURM
+* [`docs/troubleshooting.md`](docs/troubleshooting.md) — decode failures, corrupt frames, memory measurements
 * [`docs/calibration.md`](docs/calibration.md) — equations, parameters, what the numbers mean and do not
 * [`docs/format.md`](docs/format.md) — CSQ/FFF/JPEG-LS layout and the sources it was built from
 * [`docs/validation.md`](docs/validation.md) — test report, real-recording cross-checks, T540 checklist

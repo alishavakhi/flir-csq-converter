@@ -203,6 +203,7 @@ def parse_raw_frame(
     base: int = 0,
     *,
     png_byteswap: str = "auto",
+    allow_fallback: bool = False,
 ) -> RawFrame:
     """Decode the RawData record of the block at ``base`` into sensor counts."""
     hdr = parse_header(data, base)
@@ -258,7 +259,8 @@ def parse_raw_frame(
                     f"{width}x{height}"
                 )
     else:
-        arr, codec = decode_compressed(payload, width=width, height=height)
+        arr, codec = decode_compressed(payload, width=width, height=height,
+                                       allow_fallback=allow_fallback)
         if rec.subtype not in (4, 3) and kind in ("jpegls", "lossless jpeg"):
             warnings.append(
                 f"record subtype {rec.subtype} but payload is {kind}; decoded by content"

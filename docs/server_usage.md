@@ -136,6 +136,27 @@ python convert_csq.py --input-dir input --output-dir output --on-error stop
 Exit codes: `0` everything converted or already up to date, `4` some files failed but the others
 converted (usable), `2` nothing could be converted, `130` interrupted.
 
+### Corrupt or undecodable frames
+
+A long recording copied while the camera was still writing, or one bad block on the
+card, makes single frames undecodable. The default is to stop and name the frame;
+recovery mode keeps everything else:
+
+```bash
+# which frames are bad? (no conversion, safe to run twice)
+python convert_csq.py /path/to/recording.csq --check-frames --json > frames.json
+
+# convert, keeping unreadable frames as NaN with their timestamps
+python convert_csq.py /path/to/recording.csq --output-dir output \
+  --on-decode-error recover --dump-bad-frames output/bad_frames
+```
+
+Recovered files are `ok-with-gaps`: `/frame_status` is 1 for those frames, the
+metadata lists them under `failed_frames`, and `batch_summary.json` counts
+`files_with_gaps` and `recovered_frames`. If `--check-frames` reports the same
+indices on a second run, the payloads are corrupt — more RAM or a longer time limit
+will not change that. See [`troubleshooting.md`](troubleshooting.md).
+
 ### MATLAB output (`--format mat`)
 
 ```bash
@@ -157,7 +178,7 @@ two thirds.
 
 | value | container | size limit | RAM |
 |---|---|---|---|
-| `auto` (default) | v7.3 above a 1.8 GB estimate, v7 below | none / 2 GB | one frame (v7.3) / whole cube (v7) |
+| `auto` (default) | v7.3 above a 256 MB estimate, v7 below | none / 2 GB | one frame (v7.3) / whole cube (v7) |
 | `7.3` | MATLAB v7.3, HDF5 + 512-byte user block | none | **one frame** - use this for long recordings |
 | `7` | classic `savemat` | 2 GB (refused above) | whole cube |
 
@@ -292,6 +313,8 @@ tree.
 | job killed, `Killed` in dmesg | out of memory or wall-time limit: lower `--mem`, check free space, split the input |
 | disk quota exceeded | `--no-save-raw` halves the size, or convert to another filesystem |
 | conversion is slow | it is decoding JPEG-LS for every frame; measure with `--limit 1`, and use `--stride 2` if every frame is not needed |
+| `JpeglsError` / "could not read this payload" on one frame | the payload is corrupt; run `--check-frames`, then `--on-decode-error recover` to keep the rest and `--dump-bad-frames` to save the frame |
+| MaxRSS much larger than ~200 MB | not the conversion loop; check which MATLAB container was used (`conversion.matlab_container` in the JSON report) and see `troubleshooting.md` §4 |
 | results look like temperatures but are wrong by kelvin | the camera stored a different emissivity/distance; check `conversion.parameters` in the metadata and override with `--emissivity`, `--distance` |
 
 ## 10. Data and privacy

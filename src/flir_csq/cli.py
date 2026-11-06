@@ -69,6 +69,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true", help="replace existing outputs")
     p.add_argument("--compression-level", type=int, default=4,
                    help="HDF5 gzip level 0-9 (default 4; 0 = no compression)")
+    p.add_argument("--on-decode-error", choices=("fail", "recover"), default="fail",
+                   help="what to do when a frame cannot be decoded: stop (default) or keep the "
+                        "recording and write a NaN frame with its timestamp (status 1)")
+    p.add_argument("--dump-bad-frames", type=Path, metavar="DIR", default=None,
+                   help="save the payload of every unreadable frame to DIR (for analysis)")
+    p.add_argument("--allow-fallback-decoder", action="store_true",
+                   help="if the primary JPEG-LS decoder rejects a stream, also try the other "
+                        "installed decoder (it may accept truncated data - use with care)")
+    p.add_argument("--memory-log-every", type=int, default=0, metavar="N",
+                   help="log RSS and peak RSS every N frames (0 = off)")
+    p.add_argument("--check-frames", action="store_true",
+                   help="decode every frame and report which ones fail, converting nothing")
     p.add_argument("--mat-version", choices=("auto", "7", "7.3"), default="auto",
                    help="MATLAB .mat container: auto picks v7.3 (HDF5, >2 GB capable) for "
                         "large cubes and v7 for small ones (default: auto)")
@@ -218,6 +230,9 @@ def _run_batch(args, formats: tuple[str, ...]) -> int:
         stride=args.stride,
         compression_level=args.compression_level,
         mat_version=args.mat_version,
+        on_decode_error=args.on_decode_error,
+        dump_bad_frames=Path(args.dump_bad_frames).expanduser() if args.dump_bad_frames else None,
+        allow_fallback_decoder=args.allow_fallback_decoder,
         emissivity=args.emissivity,
         object_distance_m=args.object_distance_m,
         reflected_temperature_c=args.reflected_temperature_c,
@@ -240,12 +255,18 @@ def _run_batch(args, formats: tuple[str, ...]) -> int:
     print(f"batch finished: {totals['converted']} converted, {totals['skipped']} skipped, "
           f"{totals['failed']} failed, {totals['planned']} planned "
           f"({totals['frames_written']} frames, {result.duration_s:.1f} s)")
+    if totals.get("files_with_gaps"):
+        print(f"note       {totals['files_with_gaps']} file(s) contain "
+              f"{totals['recovered_frames']} unreadable frame(s), kept as NaN")
     if not args.quiet:
         for outcome in result.outcomes:
             if outcome.status == "ok":
                 print(f"  ok        {outcome.input.name} -> {outcome.output}")
             elif outcome.status == "skipped":
                 print(f"  skipped   {outcome.input.name}")
+            elif outcome.status == "ok-with-gaps":
+                print(f"  ok*       {outcome.input.name} -> {outcome.output}  "
+                      f"({outcome.recovered_frames} unreadable frame(s) as NaN)")
             elif outcome.status == "planned":
                 print(f"  would do  {outcome.input.name} -> {outcome.output}")
             else:
@@ -269,6 +290,9 @@ def _print_result(result, as_json: bool) -> None:
     print()
     print(f"converted  {result.frames_written} frames  ->  shape {result.shape}")
     print(f"mode       {result.mode_effective}")
+    if result.status == "ok-with-gaps":
+        recovered = result.metadata.get("conversion", {}).get("recovered_frames", 0)
+        print(f"recovered  {recovered} unreadable frame(s): NaN with status 1, timestamps kept")
     agg = result.metadata.get("statistics", {}).get("aggregate", {})
     if agg.get("global_min_C") is not None:
         print(f"temperature  {agg['global_min_C']:.2f} .. {agg['global_max_C']:.2f} degC  "
@@ -294,8 +318,9 @@ def _print_result(result, as_json: bool) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
-                        format="%(levelname)s %(name)s: %(message)s")
+    level = (logging.DEBUG if args.verbose
+             else logging.INFO if getattr(args, "memory_log_every", 0) else logging.WARNING)
+    logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
 
     if args.verify is not None:
         if str(args.verify).lower().endswith(".mat"):
@@ -335,6 +360,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
+        if args.check_frames:
+            from .diagnostics import check_frames
+
+            report = check_frames(args.input, dump_dir=args.dump_bad_frames,
+                                  allow_fallback=args.allow_fallback_decoder)
+            if args.as_json:
+                print(json.dumps(report, indent=2, default=str))
+            else:
+                print(f"file       {report['path']}")
+                print(f"checked    {report['checked']} frames "
+                      f"({report['frames_per_second']} frames/s, {report['elapsed_s']} s)")
+                print(f"decoded    {report['decoded']}")
+                print(f"failed     {report['failed']}"
+                      + (f"  first at frame {report['first_failure']}"
+                         if report["failed"] else ""))
+                for failure in report["failures"][:10]:
+                    print(f"  frame {failure['frame_index']}: {failure['error']}")
+                if report["failed"] > 10:
+                    print(f"  ... {report['failed'] - 10} more")
+                if report["failed"]:
+                    print("\nIf the same indices fail on a second run the payloads are corrupt "
+                          "(not a decoder race); see docs/troubleshooting.md.")
+            return 0 if report["all_decoded"] else 3
+
         if args.inspect:
             info = inspect_recording(args.input)
             _print_inspection(info, args.as_json)
@@ -356,6 +405,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             overwrite=args.overwrite,
             compression_level=args.compression_level,
             mat_version=args.mat_version,
+            on_decode_error=args.on_decode_error,
+            dump_bad_frames=args.dump_bad_frames,
+            allow_fallback_decoder=args.allow_fallback_decoder,
+            memory_log_every=args.memory_log_every,
             emissivity=args.emissivity,
             object_distance_m=args.object_distance_m,
             reflected_temperature_c=args.reflected_temperature_c,

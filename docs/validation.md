@@ -16,7 +16,7 @@ imagecodecs 2026.10.10, PySide6, flirpy 0.6.2, ExifTool 12.76.
 
 ```
 $ pytest
-117 passed in 9.5 s
+139 passed in 24.3 s
 ```
 
 | # | requirement (from the task) | where it is tested |
@@ -35,6 +35,8 @@ $ pytest
 | 12 | memory-efficient processing | `test_performance.py::test_peak_memory_does_not_grow_with_frame_count` (peak RSS between 40 and 600 frames), `test_conversion_speed_is_reasonable` |
 | 13 | timestamp preservation | `test_decoder.py::test_timestamps_are_read_per_frame_with_millisecond_resolution`, `test_conversion.py::test_timestamps_preserve_camera_clock_units_and_are_exact`, `test_estimates_are_labelled_when_the_file_has_no_clock` |
 | 14 | conversion reproducibility | `test_conversion.py::test_conversion_is_reproducible_bit_for_bit` |
+| — | codec failures, recovery, long recordings | `test_recovery.py` (17 tests): truncated payload rejected, corrupt entropy data keeps the codec's own exception, corrupt SOF55 dimensions rejected without a huge allocation, allocation bounded under a 1 GiB `RLIMIT_AS`, default failure names the frame, recovery writes NaN + status 1 + preserved timestamps, first-frame recovery, payload dumping with SHA-256, MAT v7.3 recovery, deterministic failing indices over 2600 frames, CLI/`--check-frames`, batch `ok-with-gaps` |
+| — | memory on long recordings | `test_long_recording.py` (5 tests): decode RSS flat over 1200 frames, conversion peak flat between 200 and 3000 frames, failures stable at the same indices over 2600 frames, MAT v7.3 streaming at 1500 frames, batch peak across three files |
 | — | MATLAB export (orientation, containers, streaming) | `test_mat.py` (17 tests): v7 `(h, w, frames)` values vs ground truth, v7.3 header/user-block, HDF5↔MATLAB dimension mapping, `MATLAB_class` attributes, metadata char vector, raw-counts option, auto/forced container selection, v7 size refusal, abort cleanup, two independent readers (mat73 and hdf5storage) agreeing, `verify_mat` pass/fail, batch and CLI `--format mat`, and peak-RSS flatness between 30 and 400 frames |
 | — | headless batch mode (directory input, resume, error isolation, logs) | `test_batch.py` (25 tests): discovery, naming/tree preservation, corrupt-file isolation, skip/resume on unchanged files, reconversion after a change, `--overwrite`, settings invalidation, dry run, duplicate names, state/log/summary artefacts, "batch does not import Qt", CLI `--input-dir` interface and exit codes |
 
@@ -93,6 +95,18 @@ the limit (tested with a lowered threshold) instead of writing a truncated file.
 
 Loading the file in a real MATLAB session (`S = load(...)`) is the one step that still has to
 happen on a machine with MATLAB.
+
+### Decode robustness and memory
+
+A server run once reported `MaxRSS = 4.8 GiB` and JPEG-LS errors around frame 3000.
+The measurements and the three concrete causes are written up in
+[`troubleshooting.md`](troubleshooting.md): a masked codec exception, a corrupt
+JPEG-LS header that made the codec request 6.7 GiB, and a fallback decoder that
+silently accepted truncated streams. Decode, radiometry, HDF5 and MAT v7.3 writing
+measured flat (39–93 MB peak over thousands of frames). On a damaged copy of the
+real T1020 recording, `--check-frames` named frame 10, the default conversion
+refused with CharLS's own message, and recovery produced a verified cube with that
+frame NaN and its timestamp intact.
 
 ## 2. Real recording: FLIR T1020 `.csq`
 
