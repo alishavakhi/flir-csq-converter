@@ -12,6 +12,14 @@ venv/
 *.partial
 *.scratch.npy
 
+# Batch outputs
+flir_csq_output/
+.flir_csq_state.json
+batch_summary.json
+logs/
+flir-csq-*.out
+flir-csq-*.err
+
 # Recordings and generated data: never commit thermal data or outputs
 *.csq
 *.seq

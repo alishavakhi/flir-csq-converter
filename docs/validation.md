@@ -16,7 +16,7 @@ imagecodecs 2026.10.10, PySide6, flirpy 0.6.2, ExifTool 12.76.
 
 ```
 $ pytest
-73 passed in 5.3 s
+98 passed in 7.1 s
 ```
 
 | # | requirement (from the task) | where it is tested |
@@ -35,6 +35,7 @@ $ pytest
 | 12 | memory-efficient processing | `test_performance.py::test_peak_memory_does_not_grow_with_frame_count` (peak RSS between 40 and 600 frames), `test_conversion_speed_is_reasonable` |
 | 13 | timestamp preservation | `test_decoder.py::test_timestamps_are_read_per_frame_with_millisecond_resolution`, `test_conversion.py::test_timestamps_preserve_camera_clock_units_and_are_exact`, `test_estimates_are_labelled_when_the_file_has_no_clock` |
 | 14 | conversion reproducibility | `test_conversion.py::test_conversion_is_reproducible_bit_for_bit` |
+| — | headless batch mode (directory input, resume, error isolation, logs) | `test_batch.py` (25 tests): discovery, naming/tree preservation, corrupt-file isolation, skip/resume on unchanged files, reconversion after a change, `--overwrite`, settings invalidation, dry run, duplicate names, state/log/summary artefacts, "batch does not import Qt", CLI `--input-dir` interface and exit codes |
 
 Additional safety properties covered by the suite: `ConversionCancelled` leaves no output file;
 existing outputs are never overwritten without `--overwrite`; a recording whose frame geometry
@@ -54,6 +55,17 @@ Recordings built with **known temperatures**, converted end to end, compared wit
 The residual is the uint16 quantisation of the counts (~0.007 °C per count for these Planck
 constants). This proves the forward model and the inversion agree; it proves nothing about a
 particular camera's calibration.
+
+### Batch / server mode
+
+The batch path is covered by the same synthetic recordings, driven exactly as on a server: a
+directory containing good files, a nested file, a corrupt file and an uncalibrated file. Verified
+properties: three files converted while one failed; re-running converts nothing and rewrites
+nothing; a changed recording is detected by size/mtime/head/tail hash and re-converted; deleting an
+output rebuilds it; a corrupted state file does not abort the run; logs, `batch_summary.json` and
+the state file are written; and importing the batch module does **not** import Qt (so it runs on a
+machine with no display libraries). The wrapper scripts are syntax-checked in CI and
+`run_server.sh` is executed there against a synthetic two-file tree.
 
 ## 2. Real recording: FLIR T1020 `.csq`
 

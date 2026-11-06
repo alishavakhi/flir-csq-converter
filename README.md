@@ -27,7 +27,7 @@ with h5py.File("experiment_001_temperature.h5") as f:
 
 | | |
 |---|---|
-| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, PySide6 GUI, 72 automated tests |
+| **Works and is tested** | CSQ container decoding (FFF blocks, JPEG-LS payloads), per-frame metadata and timestamps, Planck radiometry, emissivity/atmosphere correction, HDF5/NPY/CSV/MAT export, CLI, headless batch mode, PySide6 GUI, 98 automated tests |
 | **Validated on a real recording** | A public FLIR **T1020** `.csq` (22 frames, 1024×768, JPEG-LS): payload bytes **sha256-identical** to ExifTool's own extraction, **20/20 metadata fields identical** to ExifTool, temperatures 15.5–33.6 °C matching the scene (outdoor forest, warm animal), **max 0.21 °C** difference from flirpy's independent `raw2temp` |
 | **Not yet validated** | **A real FLIR T540 recording.** No T540 file was available. The container is the same T-series FFF/JPEG-LS family, and the code reads dimensions, codec, calibration and timestamps from the file rather than assuming them — but T540 compatibility and absolute accuracy against FLIR Research Studio remain **pending** (`docs/validation.md` lists exactly what to check) |
 
@@ -73,12 +73,32 @@ python convert_csq.py experiment_001.csq --inspect
 
 # verify an output cube again
 python convert_csq.py --verify results/experiment_001_temperature.h5
+
+# batch: every recording under a directory, headless (server / SSH)
+python convert_csq.py --input-dir ~/flir-project/input \
+                      --output-dir ~/flir-project/output --format h5
+./run_server.sh ~/flir-project/input ~/flir-project/output     # wrapper: logs + summary
 ```
 
 The GUI provides drag-and-drop, recording information (camera, resolution, frames, duration,
 payload codec, calibration), output directory and format selection, progress with the current
 frame number, cancel, and an "open output folder" button. Conversion runs in a worker thread, so
 the window stays responsive.
+
+## Headless batch mode (Linux server, no display, no sudo)
+
+```bash
+./scripts/install_server.sh                                  # venv + codec check, no root
+./run_server.sh ~/flir-project/input ~/flir-project/output   # convert everything
+```
+
+Each recording becomes its own `<name>_temperature.h5` (input tree mirrored), with a per-file
+JSON report, a `batch_summary.json`, per-run logs in `logs/`, and a state file that makes re-runs
+skip completed work. A corrupted or uncalibrated recording is recorded as failed and does not stop
+the others; interrupting with Ctrl-C keeps everything already written and resumes on the next run.
+Memory stays at one frame regardless of recording length. On a SLURM cluster use
+`run_slurm.sbatch` instead of running on the login node. Full guide, including data transfer,
+monitoring, SLURM and troubleshooting: [`docs/server_usage.md`](docs/server_usage.md).
 
 ## What the converter actually decodes
 
@@ -146,7 +166,7 @@ takes effect at the next frame boundary.
 ## Tests
 
 ```bash
-pytest            # 73 tests: decoder, radiometry, exporters, end-to-end, CLI, GUI, memory
+pytest            # 98 tests: decoder, radiometry, exporters, end-to-end, CLI, batch, GUI, memory
 ```
 
 The suite builds synthetic recordings with **known ground-truth temperatures** — including a
@@ -160,6 +180,7 @@ camera compatibility; see `docs/validation.md`.
 
 * [`docs/installation.md`](docs/installation.md) — Ubuntu setup, Qt libraries, codec troubleshooting
 * [`docs/usage.md`](docs/usage.md) — CLI reference, GUI walkthrough, Python/MATLAB reading
+* [`docs/server_usage.md`](docs/server_usage.md) — headless deployment on a Linux server, batch mode, SLURM
 * [`docs/calibration.md`](docs/calibration.md) — equations, parameters, what the numbers mean and do not
 * [`docs/format.md`](docs/format.md) — CSQ/FFF/JPEG-LS layout and the sources it was built from
 * [`docs/validation.md`](docs/validation.md) — test report, real-recording cross-checks, T540 checklist
@@ -178,6 +199,17 @@ camera compatibility; see `docs/validation.md`.
   not as the range maximum.
 * The 8-bit colourised `.mp4`/`.avi` exports some cameras produce contain no radiometry at all
   and are refused on purpose.
+
+## Server installation (no root, no GUI)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install numpy h5py imagecodecs          # or: pip install pylibjpeg pylibjpeg-libjpeg
+pip install -e .
+```
+
+`./scripts/install_server.sh` does exactly this, checks the JPEG-LS decoder, and prints the host
+information (Python version, cores, memory, free disk, SLURM partitions) you need to size a job.
 
 ## Licence and provenance
 

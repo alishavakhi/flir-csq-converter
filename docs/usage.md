@@ -56,6 +56,41 @@ python convert_csq.py broken.csq --raw-only -o results
 for f in ~/recordings/*.csq; do python convert_csq.py "$f" -o results --quiet; done
 ```
 
+### Batch mode (a directory of recordings, headless)
+
+```bash
+python convert_csq.py --input-dir ~/flir-project/input \
+                      --output-dir ~/flir-project/output --format h5
+```
+
+| option | meaning |
+|---|---|
+| `--input-dir DIR` | convert every `.csq`/`.seq` under `DIR` (mutually exclusive with a single file) |
+| `--output-dir DIR` | where the cubes, reports, logs and state file go (alias of `--output`) |
+| `--recursive` / `--no-recursive` | search sub-directories (default on) |
+| `--skip-existing` / `--no-skip-existing` | skip recordings already converted with the same settings (default on) |
+| `--overwrite` | convert everything again |
+| `--on-error continue\|stop` | keep going after a corrupt recording (default) or stop |
+| `--dry-run` | list the plan, write nothing |
+| `--flat-output` | do not mirror the input tree in the output directory |
+| `--naming suffix\|stem` | `<name>_temperature.h5` (default) or `<name>.h5` |
+| `--limit N` | process at most N recordings |
+| `--extension .EXT` | extra extension to accept (repeatable) |
+| `--log-file PATH` | log location (default `<output>/logs/batch_<timestamp>.log`) |
+| `--summary-json PATH` | machine-readable run summary (default `<output>/batch_summary.json`) |
+| `--json` | print the summary as JSON on stdout |
+
+Exit codes in batch mode: `0` everything converted or skipped, `4` some recordings failed but
+others succeeded, `2` nothing converted. A corrupt file never removes a successful conversion, and
+re-running the same command skips finished work. See
+[`server_usage.md`](server_usage.md) for the full server workflow (installation without root,
+`run_server.sh`, SLURM, monitoring, troubleshooting).
+
+```bash
+./run_server.sh ~/flir-project/input ~/flir-project/output       # wrapper: venv + logs + exit code
+sbatch run_slurm.sbatch ~/flir-project/input ~/flir-project/output   # SLURM compute node
+```
+
 ## Graphical interface
 
 ```bash

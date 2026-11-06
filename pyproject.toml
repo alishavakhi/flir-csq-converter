@@ -23,16 +23,18 @@ classifiers = [
 dependencies = [
     "numpy>=1.23",
     "h5py>=3.8",
-    "imagecodecs>=2023.1.23",
 ]
 
 [project.optional-dependencies]
+# JPEG-LS payload decoder (required to read T-series CSQ frames)
+codecs = ["imagecodecs>=2023.1.23"]
+# alternative decoder when imagecodecs has no wheel for your platform
+fallback-codecs = ["pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0"]
 gui = ["PySide6>=6.5", "PySide6-Essentials"]
 mat = ["scipy>=1.10"]
-# decoder fallback if imagecodecs wheels are unavailable on your platform
-fallback = ["pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0"]
 plots = ["matplotlib>=3.7"]
-dev = ["pytest>=7.4", "scipy>=1.10", "flirpy>=0.6.2"]
+dev = ["pytest>=7.4", "scipy>=1.10", "flirpy>=0.6.2", "imagecodecs>=2023.1.23",
+       "pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0"]
 
 [project.scripts]
 flir-csq = "flir_csq.cli:main"

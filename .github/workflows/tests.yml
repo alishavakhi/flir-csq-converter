@@ -49,3 +49,20 @@ jobs:
           python convert_csq.py --demo /tmp/demo.csq --output /tmp/out
           python examples/read_hdf5.py /tmp/out/demo_temperature.h5
           python convert_csq.py --verify /tmp/out/demo_temperature.h5
+
+      - name: Server wrapper smoke test (batch, headless)
+        run: |
+          mkdir -p /tmp/srv/input/sub
+          python convert_csq.py --demo /tmp/srv/input/rec_a.csq --output /tmp/srv/unused >/dev/null
+          python convert_csq.py --demo /tmp/srv/input/sub/rec_b.csq --output /tmp/srv/unused >/dev/null
+          bash -n run_server.sh && bash -n run_slurm.sbatch && bash -n scripts/install_server.sh
+          FLIR_VENV="$VIRTUAL_ENV" ./run_server.sh /tmp/srv/input /tmp/srv/output
+          test -f /tmp/srv/output/rec_a_temperature.h5
+          test -f /tmp/srv/output/sub/rec_b_temperature.h5
+          test -f /tmp/srv/output/batch_summary.json
+          python - <<'PY'
+          import json, pathlib
+          s = json.loads(pathlib.Path("/tmp/srv/output/batch_summary.json").read_text())
+          assert s["totals"]["converted"] == 2, s
+          print("batch ok:", s["totals"])
+          PY

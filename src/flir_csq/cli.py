@@ -33,13 +33,19 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Examples:\n"
                "  convert_csq.py FLIR0001.csq\n"
                "  convert_csq.py FLIR0001.csq -o results --format h5,csv --save-raw\n"
+               "  convert_csq.py --input-dir ~/flir-project/input \\\n"
+               "                 --output-dir ~/flir-project/output --format h5\n"
+               "  convert_csq.py --input-dir data --dry-run\n"
                "  convert_csq.py FLIR0001.csq --inspect\n"
                "  convert_csq.py --demo /tmp/demo.csq\n"
                "  convert_csq.py --verify results/FLIR0001_temperature.h5\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("input", nargs="?", type=Path, help=".csq (or .seq) recording to convert")
-    p.add_argument("-o", "--output", type=Path, default=None,
+    p.add_argument("input", nargs="?", type=Path,
+                   help=".csq (or .seq) recording to convert")
+    p.add_argument("--input-dir", type=Path, default=None, metavar="DIR",
+                   help="batch mode: convert every .csq/.seq recording found under DIR")
+    p.add_argument("-o", "--output", "--output-dir", dest="output", type=Path, default=None,
                    help="output directory (default: next to the input file)")
     p.add_argument("-f", "--format", default="h5",
                    help="output format(s), comma separated: h5, npy, csv, mat (default: h5)")
@@ -78,6 +84,34 @@ def build_parser() -> argparse.ArgumentParser:
                    help="IR window transmission, 0-1")
     g.add_argument("--window-temperature", dest="window_temperature_c", type=float,
                    default=None, help="IR window temperature in degC")
+
+    batch = p.add_argument_group("batch mode (with --input-dir)")
+    batch.add_argument("--recursive", dest="recursive", action="store_true", default=True,
+                       help="search sub-directories (default: on)")
+    batch.add_argument("--no-recursive", dest="recursive", action="store_false")
+    batch.add_argument("--skip-existing", dest="skip_existing", action="store_true",
+                       default=True,
+                       help="skip recordings already converted with the same settings "
+                            "(default: on)")
+    batch.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
+    batch.add_argument("--on-error", choices=("continue", "stop"), default="continue",
+                       help="keep going after a corrupted recording (default) or stop")
+    batch.add_argument("--dry-run", action="store_true",
+                       help="list what would be converted, write nothing")
+    batch.add_argument("--flat-output", dest="preserve_tree", action="store_false",
+                       default=True,
+                       help="do not mirror the input directory tree in the output directory")
+    batch.add_argument("--naming", choices=("suffix", "stem"), default="suffix",
+                       help="output name: <name>_temperature.h5 (default) or <name>.h5")
+    batch.add_argument("--extension", action="append", default=None, metavar=".EXT",
+                       help="additional recording extension to look for (repeatable); "
+                            ".csq and .seq are always included")
+    batch.add_argument("--limit", type=int, default=None,
+                       help="process at most N recordings (useful for a first test)")
+    batch.add_argument("--log-file", type=Path, default=None,
+                       help="log file (default: <output>/logs/batch_<timestamp>.log)")
+    batch.add_argument("--summary-json", type=Path, default=None,
+                       help="machine-readable run summary (default: <output>/batch_summary.json)")
 
     p.add_argument("--inspect", action="store_true",
                    help="print what is in the recording, convert nothing")
@@ -153,6 +187,77 @@ def _print_inspection(info: dict, as_json: bool) -> None:
         print(f"warning     {warning}")
 
 
+def _run_batch(args, formats: tuple[str, ...]) -> int:
+    from .batch import BatchOptions, run_batch
+
+    # Never write into the input tree by default: an uploaded dataset may be read-only.
+    output_dir = (Path(args.output).expanduser() if args.output
+                  else Path.cwd() / "flir_csq_output")
+    extensions = tuple({".csq", ".seq", *([e if e.startswith(".") else "." + e
+                                          for e in (args.extension or [])])})
+    options = BatchOptions(
+        input_dir=Path(args.input_dir).expanduser(),
+        output_dir=output_dir,
+        formats=formats,
+        recursive=args.recursive,
+        skip_existing=args.skip_existing,
+        overwrite=args.overwrite,
+        continue_on_error=args.on_error == "continue",
+        dry_run=args.dry_run,
+        preserve_tree=args.preserve_tree,
+        naming=args.naming,
+        extensions=extensions,
+        limit=args.limit,
+        save_raw=args.save_raw,
+        save_mask=args.save_mask,
+        save_metadata=args.save_metadata,
+        mode=args.mode,
+        stride=args.stride,
+        compression_level=args.compression_level,
+        emissivity=args.emissivity,
+        object_distance_m=args.object_distance_m,
+        reflected_temperature_c=args.reflected_temperature_c,
+        atmospheric_temperature_c=args.atmospheric_temperature_c,
+        relative_humidity=args.relative_humidity,
+        window_transmission=args.window_transmission,
+        window_temperature_c=args.window_temperature_c,
+        log_file=Path(args.log_file).expanduser() if args.log_file else None,
+        summary_path=Path(args.summary_json).expanduser() if args.summary_json else None,
+    )
+    result = run_batch(options)
+
+    if args.as_json:
+        print(json.dumps({**result.as_dict(), "exit_code": result.exit_code}, indent=2,
+                         default=str))
+        return result.exit_code
+
+    totals = result.as_dict()["totals"]
+    print()
+    print(f"batch finished: {totals['converted']} converted, {totals['skipped']} skipped, "
+          f"{totals['failed']} failed, {totals['planned']} planned "
+          f"({totals['frames_written']} frames, {result.duration_s:.1f} s)")
+    if not args.quiet:
+        for outcome in result.outcomes:
+            if outcome.status == "ok":
+                print(f"  ok        {outcome.input.name} -> {outcome.output}")
+            elif outcome.status == "skipped":
+                print(f"  skipped   {outcome.input.name}")
+            elif outcome.status == "planned":
+                print(f"  would do  {outcome.input.name} -> {outcome.output}")
+            else:
+                print(f"  FAILED    {outcome.input.name}: {outcome.error}")
+                if outcome.hint:
+                    print(f"            hint: {outcome.hint}")
+    if result.log_file:
+        print(f"log         {result.log_file}")
+    if result.summary_path:
+        print(f"summary     {result.summary_path}")
+    if not result.outcomes:
+        print("no recordings found - check --input-dir and the file extensions")
+        return 2
+    return result.exit_code
+
+
 def _print_result(result, as_json: bool) -> None:
     if as_json:
         print(json.dumps({**result.metadata, "summary": result.as_dict()}, indent=2, default=str))
@@ -208,6 +313,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"JPEG-LS, ground truth built in)")
         args.input = demo_path
         args.overwrite = True
+
+    if args.input_dir is not None:
+        if args.input is not None:
+            parser.error("give either a recording or --input-dir, not both")
+        if args.inspect or args.verify is not None or args.demo is not None:
+            parser.error("--input-dir cannot be combined with --inspect, --verify or --demo")
+        return _run_batch(args, _formats(args.format))
 
     if args.input is None:
         parser.print_help()
