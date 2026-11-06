@@ -15,7 +15,8 @@
 #                    (for module-loaded or system Pythons on HPC clusters)
 #   FLIR_INPUT_DIR   input directory                      (default: ~/flir-project/input)
 #   FLIR_OUTPUT_DIR  output directory                     (default: ~/flir-project/output)
-#   FLIR_FORMATS     comma separated formats              (default: h5)
+#   FLIR_FORMATS     comma separated formats              (default: h5; e.g. h5,mat)
+#   FLIR_MAT_VERSION MATLAB container for .mat output      (default: auto = 7.3 for big cubes)
 #   FLIR_LIMIT       process only the first N recordings   (default: all)
 #
 # Exit codes: 0 all good (converted or already done), 2 nothing converted,
@@ -66,6 +67,13 @@ ARGS=(--input-dir "$INPUT_DIR" --output-dir "$OUTPUT_DIR" --format "$FORMATS")
 if [ -n "${FLIR_LIMIT:-}" ]; then
   ARGS+=(--limit "$FLIR_LIMIT")
 fi
+case ",$FORMATS," in
+  *,mat,*|*,matlab,*)
+    if [ -n "${FLIR_MAT_VERSION:-}" ]; then
+      ARGS+=(--mat-version "$FLIR_MAT_VERSION")
+    fi
+    ;;
+esac
 
 # stdout/stderr go to the console and to the run log; the program writes its own
 # batch_*.log and batch_summary.json into the output directory as well.

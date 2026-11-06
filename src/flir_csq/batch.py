@@ -148,6 +148,7 @@ class BatchOptions:
     mode: str = "auto"
     stride: int = 1
     compression_level: int = 4
+    mat_version: str = "auto"
     emissivity: float | None = None
     object_distance_m: float | None = None
     reflected_temperature_c: float | None = None
@@ -176,6 +177,7 @@ class BatchOptions:
             "mode": self.mode,
             "stride": self.stride,
             "compression_level": self.compression_level,
+            "mat_version": self.mat_version,
             "emissivity": self.emissivity,
             "object_distance_m": self.object_distance_m,
             "reflected_temperature_c": self.reflected_temperature_c,
@@ -553,6 +555,7 @@ def _convert_one(path: Path, outputs: dict[str, Path], options: BatchOptions,
         stride=options.stride,
         overwrite=True,  # the batch decides, and records why in the state file
         compression_level=options.compression_level,
+        mat_version=options.mat_version,
         emissivity=options.emissivity,
         object_distance_m=options.object_distance_m,
         reflected_temperature_c=options.reflected_temperature_c,

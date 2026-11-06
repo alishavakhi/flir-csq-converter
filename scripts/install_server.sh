@@ -37,6 +37,8 @@ python -m pip install --upgrade pip >/dev/null
 
 echo "== dependencies =="
 python -m pip install --no-input numpy h5py || exit 2
+# scipy is optional: only the small-cube MATLAB v7 container needs it (v7.3 does not).
+python -m pip install --no-input scipy || echo "scipy not installed (MATLAB v7 export disabled; v7.3 works)"
 
 if python -m pip install --no-input "imagecodecs>=2023.1.23"; then
   echo "imagecodecs installed"

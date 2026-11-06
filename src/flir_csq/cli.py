@@ -69,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--overwrite", action="store_true", help="replace existing outputs")
     p.add_argument("--compression-level", type=int, default=4,
                    help="HDF5 gzip level 0-9 (default 4; 0 = no compression)")
+    p.add_argument("--mat-version", choices=("auto", "7", "7.3"), default="auto",
+                   help="MATLAB .mat container: auto picks v7.3 (HDF5, >2 GB capable) for "
+                        "large cubes and v7 for small ones (default: auto)")
     # measurement overrides
     g = p.add_argument_group("measurement overrides (replace values stored in the recording)")
     g.add_argument("--emissivity", type=float, default=None)
@@ -214,6 +217,7 @@ def _run_batch(args, formats: tuple[str, ...]) -> int:
         mode=args.mode,
         stride=args.stride,
         compression_level=args.compression_level,
+        mat_version=args.mat_version,
         emissivity=args.emissivity,
         object_distance_m=args.object_distance_m,
         reflected_temperature_c=args.reflected_temperature_c,
@@ -294,7 +298,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         format="%(levelname)s %(name)s: %(message)s")
 
     if args.verify is not None:
-        report = verify_hdf5(args.verify)
+        if str(args.verify).lower().endswith(".mat"):
+            from .verify import verify_mat
+
+            report = verify_mat(args.verify)
+        else:
+            report = verify_hdf5(args.verify)
         print(json.dumps(report, indent=2, default=str) if args.as_json else
               f"{'PASS' if report['passed'] else 'FAIL'}  {report['file']}\n"
               + "\n".join(f"  - {p}" for p in report.get("problems", [])))
@@ -346,6 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stride=args.stride,
             overwrite=args.overwrite,
             compression_level=args.compression_level,
+            mat_version=args.mat_version,
             emissivity=args.emissivity,
             object_distance_m=args.object_distance_m,
             reflected_temperature_c=args.reflected_temperature_c,

@@ -24,6 +24,7 @@ input, with `raw_counts`, `timestamps`, `timestamps_unix_ms`, `metadata`, and a
 | `--start N`, `--stop M`, `--stride K` | frame subset; indices are the recording's own frame numbers and are recorded in the report |
 | `--overwrite` | replace existing outputs |
 | `--compression-level 0-9` | HDF5 gzip level (default 4; 0 = uncompressed, fastest) |
+| `--mat-version {auto,7,7.3}` | MATLAB container: `auto` (default) uses v7.3 when the cube approaches 2 GB, v7 for small cubes; `7.3` always streams into an HDF5-based MAT file with no size limit |
 | `--emissivity`, `--distance`, `--reflected-temperature`, `--atmospheric-temperature`, `--humidity`, `--window-transmission`, `--window-temperature` | override values stored in the recording; the override is written into the report |
 | `--inspect` | print what the recording contains, convert nothing |
 | `--verify H5` | re-verify an output cube |
@@ -45,6 +46,7 @@ python convert_csq.py FLIR0001.csq -o results --format h5,csv --save-raw
 
 # a long recording: every 5th frame, into MATLAB and HDF5
 python convert_csq.py FLIR0001.csq -o results --format h5,mat --stride 5
+python convert_csq.py FLIR0001.csq -o results --format mat --mat-version 7.3
 
 # the camera stored the wrong emissivity: override it and keep the rest
 python convert_csq.py FLIR0001.csq --emissivity 0.87 --distance 0.5 -o results
@@ -133,17 +135,34 @@ For frames larger than RAM, read slices: `T[1000:1010]`, or `T[:, y0:y1, x0:x1]`
 
 ## Reading the output in MATLAB
 
+Two routes, same numbers.
+
+**`.mat` file** (`--format mat`): `temperature_C` is already `(height, width, frames)`.
+
+```matlab
+S = load("experiment_001_temperature.mat");
+T = S.temperature_C;        % [H W frames] single, degC
+t = S.timestamps_s;         % [frames x 1] seconds from the first frame
+meta = jsondecode(char(S.metadata_json));   % camera, calibration, conversion parameters
+imagesc(double(T(:, :, 1))); axis image; colormap hot; colorbar
+```
+
+The container is chosen by `--mat-version`:
+
+* `7.3` — MATLAB v7.3 (HDF5-based, 512-byte user block, `MATLAB_class` attributes). Frames are
+  written one at a time while decoding, so cubes far beyond 2 GB cost one frame of RAM.
+* `7` — classic `scipy.io.savemat` file, readable by MATLAB, Octave and scipy, but limited to
+  2 GB and it needs the cube in memory.
+* `auto` (default) — v7.3 above a 1.8 GB estimate, v7 below it.
+
+**HDF5 file** (default): MATLAB reads it directly and lazily, but the dataset is stored as
+`(frames, width, height)`, so transpose:
+
 ```matlab
 T = h5read("experiment_001_temperature.h5", "/temperature_C");  % [W H frames]
 T = permute(T, [2 1 3]);                                        % [H W frames]
 t = h5read("experiment_001_temperature.h5", "/timestamps");
-imagesc(double(T(:, :, 1))); axis image; colormap hot; colorbar
 ```
-
-HDF5 is the recommended route: MATLAB reads it directly and lazily. The `.mat` export
-(`--format mat`) writes `temperature_C` as `[frames H W]` plus `timestamps_s` and a metadata
-string, but `scipy.io.savemat` needs the whole cube in memory, so it is unsuitable for very long
-recordings.
 
 ## Verifying a cube
 

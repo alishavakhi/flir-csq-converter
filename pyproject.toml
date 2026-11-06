@@ -34,7 +34,7 @@ gui = ["PySide6>=6.5", "PySide6-Essentials"]
 mat = ["scipy>=1.10"]
 plots = ["matplotlib>=3.7"]
 dev = ["pytest>=7.4", "scipy>=1.10", "flirpy>=0.6.2", "imagecodecs>=2023.1.23",
-       "pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0"]
+       "pylibjpeg>=2.0", "pylibjpeg-libjpeg>=2.0", "mat73>=0.62", "hdf5storage>=0.2"]
 
 [project.scripts]
 flir-csq = "flir_csq.cli:main"

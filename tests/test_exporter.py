@@ -77,10 +77,11 @@ def test_csv_export_writes_one_numeric_matrix_per_frame(tmp_path):
 def test_mat_export_roundtrips_through_scipy(tmp_path):
     scipy_io = pytest.importorskip("scipy.io")
     target = tmp_path / "cube.mat"
-    path = _fill(make_exporter("mat", target), 2, 4, 4)
+    path = _fill(make_exporter("mat", target, mat_version="7"), 2, 4, 4)
     data = scipy_io.loadmat(path)
-    assert data["temperature_C"].shape == (2, 4, 4)
-    assert data["temperature_C"][1, 0, 0] == pytest.approx(21.0, rel=1e-6)
+    # MATLAB orientation: (height, width, frames)
+    assert data["temperature_C"].shape == (4, 4, 2)
+    assert data["temperature_C"][0, 0, 1] == pytest.approx(21.0, rel=1e-6)
     assert str(data["units"][0]) == "degC"
 
 

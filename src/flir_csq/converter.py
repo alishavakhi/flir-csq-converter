@@ -75,6 +75,8 @@ class ConversionOptions:
     stride: int = 1
     overwrite: bool = False
     compression_level: int = 4
+    mat_version: str = "auto"          # auto | 7 | 7.3 (MATLAB output container)
+    mat73_threshold_bytes: int = 1_800_000_000
     # measurement overrides (recorded as overrides in the output metadata)
     emissivity: float | None = None
     object_distance_m: float | None = None
@@ -94,6 +96,8 @@ class ConversionOptions:
             raise ValueError(f"mode must be one of {MODES}")
         if self.stride < 1:
             raise ValueError("stride must be >= 1")
+        if self.mat_version not in ("auto", "7", "7.3", "v7", "v7.3", "5", "73"):
+            raise ValueError("mat_version must be auto, 7 or 7.3")
         if self.start < 0:
             raise ValueError("start must be >= 0")
         if self.stop is not None and self.stop <= self.start:
@@ -343,6 +347,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
     targets: dict[str, Path] = {}
     staged: dict[str, Path] = {}
     published: list[Path] = []
+    mat_container = ""
     try:
         first_info = reader.camera_info(frames[0])
         missing = _missing_calibration(first_info)
@@ -371,13 +376,16 @@ def convert(options: ConversionOptions) -> ConversionResult:
             if staging.exists():
                 shutil.rmtree(staging, ignore_errors=True) if staging.is_dir() else staging.unlink()
             exporter = make_exporter(fmt, staging, compression_level=options.compression_level,
-                                     atomic=False)
+                                     atomic=False, mat_version=options.mat_version,
+                                     mat73_threshold_bytes=options.mat73_threshold_bytes)
             exporter.open(n_frames=len(frames), height=height, width=width,
                           save_raw=options.save_raw, save_mask=options.save_mask,
                           temperature=not raw_only)
             exporters[fmt] = exporter
             targets[fmt] = target
             staged[fmt] = staging
+            if fmt == "mat":
+                mat_container = getattr(exporter, "used_version", "")
 
         total = len(frames)
         t0_ms = first_info.timestamp_unix_ms
@@ -474,6 +482,7 @@ def convert(options: ConversionOptions) -> ConversionResult:
             "atmospheric_transmission": (converted_info.atmospheric_transmission
                                          if converted_info else None),
             "decoder": probe.codec,
+            "matlab_container": mat_container or None,
             "per_frame_calibration_changes": calibration_changes,
             "invalid_pixels_note": (
                 "pixels outside the recording's raw-value range, or at the 16-bit rail, are NaN"
@@ -563,6 +572,14 @@ def convert(options: ConversionOptions) -> ConversionResult:
             from .verify import verify_hdf5
 
             result.validation = verify_hdf5(result.outputs["h5"])
+            metadata["validation"] = result.validation
+            if not result.validation.get("passed", False):
+                result.warnings.extend(result.validation.get("problems", []))
+                metadata["warnings"] = result.warnings
+        elif "mat" in result.outputs:
+            from .verify import verify_mat
+
+            result.validation = verify_mat(result.outputs["mat"])
             metadata["validation"] = result.validation
             if not result.validation.get("passed", False):
                 result.warnings.extend(result.validation.get("problems", []))

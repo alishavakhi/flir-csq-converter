@@ -26,9 +26,10 @@ Notes that matter:
 * **No display?** Nothing in the batch path imports Qt (there is a test that asserts this).
 * **SLURM?** Do not run long conversions on a login node if your site's policy forbids it — use
   `run_slurm.sbatch` (§8).
-* **Quota?** One T540 native recording (464×348, ~470 KB/frame with raw counts, ~150 KB/frame
-  without) becomes roughly 0.65 MB per frame with `temperature_C` + `raw_counts` at gzip 4.
-  A 10 000-frame recording is ~6.5 GB. Use `--no-save-raw` to roughly halve that.
+* **Quota?** Per frame of a T540 native recording (464×348 = 161 472 pixels):
+  HDF5 with `temperature_C` + `raw_counts` at gzip 4 ≈ 0.65 MB; `--no-save-raw` ≈ 0.45 MB;
+  MATLAB v7.3 with temperatures only ≈ 0.45 MB, with counts ≈ 0.65 MB (compressed, so scene
+  dependent). A 10 000-frame recording is therefore 4.5–6.5 GB.
 
 Record the numbers you see; they are what the guidance below assumes.
 
@@ -121,6 +122,10 @@ python convert_csq.py --input-dir input --output-dir output --dry-run
 # CSVs too, and a per-pixel validity mask
 python convert_csq.py --input-dir input --output-dir output --format h5,csv --save-mask
 
+# MATLAB files only, v7.3 container (streams, no 2 GB limit)
+python convert_csq.py --input-dir input --output-dir output \
+                      --format mat --mat-version 7.3 --no-save-raw
+
 # force everything to be converted again
 python convert_csq.py --input-dir input --output-dir output --overwrite
 
@@ -130,6 +135,37 @@ python convert_csq.py --input-dir input --output-dir output --on-error stop
 
 Exit codes: `0` everything converted or already up to date, `4` some files failed but the others
 converted (usable), `2` nothing could be converted, `130` interrupted.
+
+### MATLAB output (`--format mat`)
+
+```bash
+# one directory -> one .mat per recording, v7.3 (HDF5-based, no 2 GB limit)
+python convert_csq.py --input-dir input --output-dir output \
+                      --format mat --mat-version 7.3 --no-save-raw
+
+# through the wrapper
+FLIR_FORMATS=mat FLIR_MAT_VERSION=7.3 ./run_server.sh input output
+```
+
+Each file contains `temperature_C` as `(height, width, frames)` `single` in °C (already the MATLAB
+order), `timestamps_s` (column, seconds from the first frame), `timestamps_unix_ms`, and
+`metadata_json` (a char vector: `jsondecode(char(S.metadata_json))`). With `--save-raw` (default)
+the uint16 sensor counts are included as well; `--no-save-raw` reduces the file to about
+two thirds.
+
+`--mat-version`:
+
+| value | container | size limit | RAM |
+|---|---|---|---|
+| `auto` (default) | v7.3 above a 1.8 GB estimate, v7 below | none / 2 GB | one frame (v7.3) / whole cube (v7) |
+| `7.3` | MATLAB v7.3, HDF5 + 512-byte user block | none | **one frame** - use this for long recordings |
+| `7` | classic `savemat` | 2 GB (refused above) | whole cube |
+
+The v7.3 writer is incremental: each frame is decoded and written before the next one is read, so
+peak memory does not grow with recording length (a test asserts this between 30 and 400 frames).
+MATLAB opens the result with `S = load("recording_temperature.mat")` exactly like a normal
+`-v7.3` file. `python convert_csq.py --verify recording_temperature.mat` checks the header,
+orientation, dtypes and metadata without MATLAB.
 
 ## 4. Watch progress
 
@@ -237,6 +273,7 @@ Resource guidance for a T540 native recording (464×348, JPEG-LS):
 | memory | 2–4 GB is comfortable | one frame in RAM (≈0.65 MB float32 + counts) plus HDF5 buffers; the test suite asserts peak RSS does not grow with frame count |
 | CPUs | 1 is enough | conversion is sequential by design; extra cores do not speed up a single file |
 | wall time | measure one file first (`--limit 1`) and multiply | throughput is dominated by JPEG-LS decode |
+| disk | 0.45 MB/frame (temperatures only) to 0.65 MB/frame (with raw counts) | measure one file with `--limit 1` and multiply by the frame count |
 | parallel files | one job per directory | separate output directories avoid two jobs writing the same state file |
 
 Do not submit hundreds of single-file jobs against the same output directory: the state file is

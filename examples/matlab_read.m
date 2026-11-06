@@ -1,22 +1,25 @@
 %% Read a flir-csq temperature cube in MATLAB.
 %
-% HDF5 (recommended - no conversion needed, works for long recordings):
-%   MATLAB reads the cube lazily through the HDF5 library; transpose because
-%   h5read returns arrays in (columns, rows, frames) order.
+% Both containers written by the converter load with the same command:
+%   * v7.3 (--mat-version 7.3): HDF5-based, no 2 GB limit, streamed on write;
+%   * v7   (--mat-version 7):   classic format for small cubes.
+% MATLAB sees temperature_C as (height, width, frames), already in the order
+% MATLAB uses - no permute needed.
 
-file = "experiment_001_temperature.h5";
+S = load("experiment_001_temperature.mat");
+T = S.temperature_C;                 % [height width frames], single, degC
+t = S.timestamps_s;                  % [frames x 1], seconds from first frame
 
-info = h5info(file);
-disp({info.Datasets.Name});
-
-T = h5read(file, "/temperature_C");      % float32, [width height frames]
-T = permute(T, [2 1 3]);                 % -> [height width frames]
-t = h5read(file, "/timestamps");         % seconds since the first frame
-
-fprintf("shape: %d x %d x %d\n", size(T, 1), size(T, 2), size(T, 3));
-frame = double(T(:, :, 1));
+fprintf("shape: %d x %d x %d, class %s\n", size(T,1), size(T,2), size(T,3), class(T));
+frame = double(T(:,:,1));
 fprintf("frame 1: min %.2f  max %.2f  mean %.2f degC\n", ...
         min(frame(:)), max(frame(:)), mean(frame(:)));
+
+%% Metadata (camera, calibration, conversion parameters, warnings)
+meta = jsondecode(char(S.metadata_json));
+disp(meta.camera.camera_model);
+disp(meta.conversion.mode_effective);
+disp(meta.conversion.parameters);
 
 %% Display one frame with a temperature colour bar
 figure;
@@ -45,10 +48,10 @@ xlabel("time (s)");
 ylabel("mean temperature (degC)");
 grid on;
 
-%% If you exported the .mat file instead:
-%   S = load("experiment_001_temperature.mat");
-%   T = S.temperature_C;          % [frames height width], float32
-%   t = S.timestamps_s;
+%% HDF5 alternative (same numbers, no conversion needed)
+%   T = h5read("experiment_001_temperature.h5", "/temperature_C");  % [W H frames]
+%   T = permute(T, [2 1 3]);                                        % [H W frames]
+%   t = h5read("experiment_001_temperature.h5", "/timestamps");
 %
-% Note: the .mat export needs the whole cube in RAM; for long recordings use
-% the HDF5 file, which MATLAB reads directly and without loading everything.
+% Note: the v7 format cannot exceed 2 GB, so the converter switches to v7.3
+% automatically for large cubes (or force it with --mat-version 7.3).

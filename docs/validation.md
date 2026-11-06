@@ -16,7 +16,7 @@ imagecodecs 2026.10.10, PySide6, flirpy 0.6.2, ExifTool 12.76.
 
 ```
 $ pytest
-100 passed in 7.7 s
+117 passed in 9.5 s
 ```
 
 | # | requirement (from the task) | where it is tested |
@@ -35,6 +35,7 @@ $ pytest
 | 12 | memory-efficient processing | `test_performance.py::test_peak_memory_does_not_grow_with_frame_count` (peak RSS between 40 and 600 frames), `test_conversion_speed_is_reasonable` |
 | 13 | timestamp preservation | `test_decoder.py::test_timestamps_are_read_per_frame_with_millisecond_resolution`, `test_conversion.py::test_timestamps_preserve_camera_clock_units_and_are_exact`, `test_estimates_are_labelled_when_the_file_has_no_clock` |
 | 14 | conversion reproducibility | `test_conversion.py::test_conversion_is_reproducible_bit_for_bit` |
+| — | MATLAB export (orientation, containers, streaming) | `test_mat.py` (17 tests): v7 `(h, w, frames)` values vs ground truth, v7.3 header/user-block, HDF5↔MATLAB dimension mapping, `MATLAB_class` attributes, metadata char vector, raw-counts option, auto/forced container selection, v7 size refusal, abort cleanup, two independent readers (mat73 and hdf5storage) agreeing, `verify_mat` pass/fail, batch and CLI `--format mat`, and peak-RSS flatness between 30 and 400 frames |
 | — | headless batch mode (directory input, resume, error isolation, logs) | `test_batch.py` (25 tests): discovery, naming/tree preservation, corrupt-file isolation, skip/resume on unchanged files, reconversion after a change, `--overwrite`, settings invalidation, dry run, duplicate names, state/log/summary artefacts, "batch does not import Qt", CLI `--input-dir` interface and exit codes |
 
 Additional safety properties covered by the suite: `ConversionCancelled` leaves no output file;
@@ -66,6 +67,32 @@ output rebuilds it; a corrupted state file does not abort the run; logs, `batch_
 the state file are written; and importing the batch module does **not** import Qt (so it runs on a
 machine with no display libraries). The wrapper scripts are syntax-checked in CI and
 `run_server.sh` is executed there against a synthetic two-file tree.
+
+### MATLAB export
+
+MATLAB itself was not available in the development environment, so the check is on the
+documented layout plus independent readers:
+
+* header bytes at offsets 116–127 are identical to a reference v7.3 file written by
+  `hdf5storage` (`00…00 02 00 49 4D`), user block 512 bytes, no root attributes required;
+* `temperature_C` is written as HDF5 `(frames, width, height)` with `MATLAB_class = single`,
+  which MATLAB maps to `(height, width, frames)`; both `mat73` and `hdf5storage` read it back with
+  exactly that shape and identical values;
+* `metadata_json` is a UTF-16 char dataset (`MATLAB_class = char`, `MATLAB_int_decode = 2`) that
+  both readers decode, and `json.loads` parses;
+* v7 output is checked with `scipy.io.loadmat` and matches the v7.3 cube element for element;
+* the writer's peak RSS is flat between 30 and 400 frames (one frame in memory);
+* the real T1020 recording (22 frames, 1024×768) converted to v7.3 gives a 32 MB file whose
+  `temperature_C` reads as `(768, 1024, 22)` and reproduces the HDF5 cube value for value
+  (frame 0: 15.69 – 33.16 °C, mean 18.85 °C).
+
+The 2 GB boundary is not exercised on disk here (the development machine had no space for a
+multi-gigabyte artefact). It is covered structurally: v7.3 is HDF5 and has no such limit, the
+writer never holds more than one frame, and the v7 path **refuses** cubes whose estimate exceeds
+the limit (tested with a lowered threshold) instead of writing a truncated file.
+
+Loading the file in a real MATLAB session (`S = load(...)`) is the one step that still has to
+happen on a machine with MATLAB.
 
 ## 2. Real recording: FLIR T1020 `.csq`
 

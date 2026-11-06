@@ -235,25 +235,83 @@ class CsvExporter:
 
 @dataclass
 class MatExporter:
-    """MATLAB ``.mat`` volume.
+    """MATLAB ``.mat`` cube, v7.3 (HDF5) or v5 depending on size.
 
-    ``scipy.io.savemat`` needs the whole cube in memory, so this backend streams
-    into a temporary ``.npy`` memmap and converts once at the end. It therefore
-    needs roughly the cube size in RAM; for long recordings prefer HDF5 (which
-    MATLAB reads directly with ``h5read``).
+    MATLAB sees ``temperature_C`` as ``(height, width, frames)`` in both formats.
+
+    * **v7.3** (MATLAB >= 7.3, "``-v7.3``"): an HDF5 container with a 512-byte user
+      block. Frames are written one at a time while they are decoded, so a cube
+      far larger than 2 GB costs one frame of RAM (see
+      :class:`flir_csq.mat73.Mat73Writer`).
+    * **v5/v7** (``scipy.io.savemat``): universal (MATLAB, Octave, scipy) but the
+      format itself cannot exceed 2 GB and ``savemat`` needs the cube in RAM. It
+      is used for small cubes only, and refused above the size limit.
+
+    ``version="auto"`` picks v7.3 when the estimated size approaches the v7 limit.
     """
 
     target: Path
     compressed: bool = True
+    version: str = "auto"  # "auto" | "7" | "7.3"
+    threshold_bytes: int = 1_800_000_000
+    compression_level: int = 4
+    atomic: bool = True
+    used_version: str = ""
+    _impl: Any = None
     _array: Any = None
     _timestamps: list[float] = field(default_factory=list)
+    _unix_ms: list[int] = field(default_factory=list)
     _scratch: Path | None = None
+    _n_frames: int = 0
 
     def open(self, *, n_frames: int, height: int, width: int, save_raw: bool,
              save_mask: bool, temperature: bool = True) -> None:
         from numpy.lib.format import open_memmap
 
+        from .mat73 import Mat73Writer, estimate_v73_bytes
+
         _require_temperature(temperature, "MATLAB")
+        self._n_frames = n_frames
+        estimated = estimate_v73_bytes(n_frames, height, width, save_raw=save_raw)
+        if self.version == "auto":
+            use_73 = estimated > self.threshold_bytes
+        elif self.version in ("7.3", "v7.3", "73"):
+            use_73 = True
+        elif self.version in ("7", "v7", "5"):
+            use_73 = False
+            # v7 cannot exceed 2 GB; the configured threshold keeps a safety margin.
+            limit = min(2_000_000_000, self.threshold_bytes) if self.threshold_bytes > 0 \
+                else 2_000_000_000
+            if estimated > limit:
+                raise OutputError(
+                    f"this cube is estimated at {estimated / 1e9:.2f} GB, above the "
+                    f"{limit / 1e9:.2f} GB limit usable with the MATLAB v7 format",
+                    hint="Use --mat-version 7.3 (or auto) to write a MATLAB v7.3 file, "
+                         "which has no such limit.",
+                )
+        else:
+            raise OutputError(f"unknown MATLAB format {self.version!r}",
+                              hint="choose auto, 7 or 7.3")
+
+        if not use_73 and self.version == "auto":
+            # scipy is only needed for the small-cube v7 container; without it, stream to 7.3.
+            try:
+                import scipy.io  # noqa: F401
+            except ImportError:
+                import logging
+
+                logging.getLogger("flir_csq").info(
+                    "scipy is not installed: writing MATLAB v7.3 instead of v7")
+                use_73 = True
+
+        self.used_version = "7.3" if use_73 else "7"
+        if use_73:
+            self._impl = Mat73Writer(target=self.target, compression_level=self.compression_level,
+                                     atomic=self.atomic)
+            self._impl.open(n_frames=n_frames, height=height, width=width, save_raw=save_raw,
+                            save_mask=save_mask, temperature=temperature)
+            return
+
         self.target.parent.mkdir(parents=True, exist_ok=True)
         self._scratch = self.target.with_name(self.target.name + ".scratch.npy")
         self._array = open_memmap(self._scratch, mode="w+", dtype="float32",
@@ -261,38 +319,53 @@ class MatExporter:
 
     def write(self, index: int, temperature: np.ndarray | None, raw: np.ndarray | None,
               timestamp_s: float, timestamp_unix_ms: int | None) -> None:
+        if self._impl is not None:
+            self._impl.write(index, temperature, raw, timestamp_s, timestamp_unix_ms)
+            return
+        assert self._array is not None and temperature is not None
         self._array[index] = temperature
         self._timestamps.append(float(timestamp_s))
+        self._unix_ms.append(int(timestamp_unix_ms) if timestamp_unix_ms is not None else -1)
 
     def finalize(self, metadata: dict[str, Any]) -> Path:
+        if self._impl is not None:
+            produced = self._impl.finalize(metadata)
+            self._impl = None
+            return produced
         try:
             from scipy.io import savemat
         except ImportError as exc:  # pragma: no cover - depends on install
             raise OutputError(
-                "MATLAB export needs scipy",
-                hint="pip install scipy   (or choose h5/npy/csv)",
+                "MATLAB v7 export needs scipy",
+                hint="pip install scipy, or use --mat-version 7.3 (HDF5, no scipy needed)",
             ) from exc
+        assert self._array is not None
         self._array.flush()
-        arr = np.asarray(self._array)
+        cube = np.asarray(self._array)                     # (frames, h, w)
+        hwf = np.transpose(cube, (1, 2, 0))                # (h, w, frames), as MATLAB wants
         savemat(self.target, {
-            "temperature_C": arr,
-            "timestamps_s": np.asarray(self._timestamps, dtype=np.float64),
+            "temperature_C": hwf,
+            "timestamps_s": np.asarray(self._timestamps, dtype=np.float64).reshape(-1, 1),
+            "timestamps_unix_ms": np.asarray(self._unix_ms, dtype=np.int64).reshape(-1, 1),
             "metadata_json": json.dumps(metadata, default=_json_default),
             "units": "degC",
-        }, do_compression=self.compressed, oned_as="row")
-        del arr
+        }, do_compression=self.compressed, oned_as="column")
+        del hwf, cube
         self._array = None
         if self._scratch and self._scratch.exists():
             self._scratch.unlink()
         return self.target
 
     def abort(self) -> None:
+        if self._impl is not None:
+            self._impl.abort()
+            self._impl = None
         self._array = None
         for path in (self.target, self._scratch):
             if path and path.exists():
                 try:
                     path.unlink()
-                except OSError:
+                except OSError:  # noqa: BLE001 - best effort cleanup
                     pass
 
 
@@ -318,7 +391,9 @@ def _json_default(obj: Any) -> Any:
 
 
 def make_exporter(fmt: str, target: Path, *, compression_level: int = 4,
-                  mat_compressed: bool = True, atomic: bool = True) -> Exporter:
+                  mat_compressed: bool = True, atomic: bool = True,
+                  mat_version: str = "auto",
+                  mat73_threshold_bytes: int = 1_800_000_000) -> Exporter:
     fmt = fmt.lower()
     if fmt in ("h5", "hdf5"):
         return Hdf5Exporter(target=target, compression_level=compression_level, atomic=atomic)
@@ -327,7 +402,9 @@ def make_exporter(fmt: str, target: Path, *, compression_level: int = 4,
     if fmt == "csv":
         return CsvExporter(target=target)
     if fmt in ("mat", "matlab"):
-        return MatExporter(target=target, compressed=mat_compressed)
+        return MatExporter(target=target, compressed=mat_compressed, version=mat_version,
+                           threshold_bytes=mat73_threshold_bytes,
+                           compression_level=compression_level, atomic=atomic)
     raise OutputError(f"unknown output format {fmt!r}", hint="choose h5, npy, csv or mat")
 
 
